@@ -2,7 +2,12 @@
 
 A Wi-Fi desk stoplight showing AI coding session state, on Microchip silicon, running Zephyr.
 Read `CONTEXT.md` for the vocabulary before writing code or docs, and `docs/PLAN.md` for the
-plan and its decision register (`D01`…`D51`).
+plan and its numbered decision register. `docs/adr/` holds the reasoning behind each durable
+decision; `JOURNAL.md` (newest entry first) is where the project stands right now, including
+what was tried and rejected.
+
+**Orienting in a fresh session:** read the top entry of `JOURNAL.md`, then the decision
+register in `docs/PLAN.md`, then only the ADRs relevant to what you are about to touch.
 
 ## Rule 1 — keep the journal
 
