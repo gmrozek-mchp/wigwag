@@ -53,6 +53,18 @@ gated requirement, not an aspiration:
 - If the budget is genuinely exceeded, the escape hatch is the larger part (D20) — but only on
   *measured* evidence, never on a hunch.
 
+## Rule 6 — never commit without explicit permission
+
+**Do not run `git commit` or `git push` unless explicitly told to in that message.**
+
+A question about committing is not permission. "Ready for the initial commit?" is a request for
+a status report, not an instruction — answer it and stop. Permission never carries forward from
+one commit to the next, and approving a plan or its results never implies approval to commit.
+
+Finish the work, then report what *would* be committed: the file list, a proposed message, and
+confirmation the tree is clean. Then wait. Amend, rebase, reset and force-push are held to the
+same rule and deserve more caution, since they rewrite history that already exists.
+
 ## Verify against real sources
 
 This project sits on fast-moving vendor and RTOS surfaces where memory is unreliable:
