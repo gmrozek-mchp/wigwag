@@ -59,6 +59,9 @@ daemon at login, and troubleshooting.
 > and silently breaks the device. See
 > [the local-only trap](host/README.md#-the-local-only-trap).
 
+For the firmware side — Zephyr workspace, SDK, building and flashing a PL10 Curiosity Nano, and
+the 8 KB footprint numbers — see **[firmware/README.md](firmware/README.md)**.
+
 ## Two things it deliberately gets right
 
 **It never lies.** If the device loses the broker for more than 10 seconds, it stops showing the

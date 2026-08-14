@@ -112,7 +112,7 @@ Recorded because the reasoning is worth keeping (→ JOURNAL entry + ADR-0001 re
 | **D50** | **Single 3.3 V rail for MCU + module; `VDDIO2` tied to `VDD` (single-supply, §3.2.3)** | settled |
 | **D51** | **MVIO / 5 V VDD operation rejected** — no BOM saving, extra Zephyr porting, pinout constraints, `AVDD` tied to `VDD`. Left available for a future revision | settled |
 | D24 | USB-C is power-only: no data, no D+/D− ESD network, 5.1 k CC pulldowns | settled |
-| D25 | Debug = SWD, pyOCD runner (PICkit 5 / PICkit Basic / Atmel-ICE / J-Link all work) | settled |
+| D25 | Debug = SWD, pyOCD runner (PICkit 5 / PICkit Basic / Atmel-ICE / J-Link all work) — **verified on the cnano's nEDBG, with DFP ≥ 1.5.437; see D69** | settled |
 | **D26** | **Lamps = 3× 10 mm diffused through-hole LEDs, driven from the 5 V rail via low-side N-FETs.** FETs are **required**, not optional — see below | settled |
 | **D27** | **4-layer PCB** with dedicated GND and PWR planes for EMC | settled |
 | **D46** | TCC0 WO0/WO1/WO2 drive the three lamps; SERCOM0 PAD[0]/PAD[1] drive the module UART | settled |
@@ -187,11 +187,19 @@ FET selection: logic-level N-channel, Vgs(th) low enough to fully enhance at 3.3
 | # | Decision | Status |
 |---|---|---|
 | D38 | Zephyr **mainline** first; Zephyr4Microchip as fallback for driver gaps | settled |
-| D39 | Host software + `native_sim` firmware before the PCB | settled |
+| D39 | Host software + simulated-module firmware before the PCB. *`native_sim` replaced by real cnano hardware — see D66* | settled |
 | D40 | Buy `EV10P22A` + `EV72E72A` to validate AT commands before committing layout | settled |
 | D41 | CAD = OpenSCAD, parametric, headless STL render | settled |
 | D42 | RF clearances encoded as OpenSCAD `assert()`s | settled |
-| **D49** | **PL10 TCC PWM devicetree enablement**, upstreamed if it turns out to be genuinely missing | spike |
+| **D49** | **PL10 TCC PWM devicetree enablement — PASSED on hardware.** Devicetree only, no driver work: `firmware/boards/pic32cm_pl10_cnano.overlay`. LED0 breathes steadily; 500 Hz carrier confirmed on an oscilloscope. TCC0 WO0/WO1/WO2 is safe to commit to the PCB | settled |
+| **D64** | **west workspace top directory = repo root**; `firmware/west.yml` is the manifest repo and `firmware/` the app (ADR-0014) | built |
+| **D65** | **Pinned to an explicit mainline SHA with a 4-module `name-allowlist`**, `--depth=1`; SDK 1.0.1 `arm-zephyr-eabi` only. ~1 GB tree + 1.4 GB SDK (ADR-0014) | built |
+| **D66** | **The module simulator runs against real cnano hardware, not `native_sim`** — Zephyr's POSIX arch is documented as not working on macOS. AT core stays Zephyr-free so it unit-tests under plain clang (ADR-0015) | settled |
+| **D67** | **Zephyr SDK 1.0.1 ships no macOS host tools** (installer skips them), so `cmake`/`ninja`/`dtc`/`gperf` come from Homebrew | settled |
+| **D68** | **`max-bit-width = <16>` for PL10 TCC0**, not the JH01's 24 — `TCC_COUNT_Msk` is `0x0000FFFF` | settled |
+| **D69** | **Run `pyocd pack update` before `pack install`** — pyOCD resolves versions from a cached index it never refreshes, and DFP 1.4.418 faults on every connect where 1.5.437 works | settled |
+| **D71** | **No dependency on MPLAB X or `ipecmd`.** pyOCD is the only supported flashing path: `west` + Zephyr SDK + pyOCD, DFP from the public CMSIS index, no vendor IDE required. Verified by a full erase/program round trip | settled |
+| **D70** | **The lamp renderer schedules on absolute deadlines, not `k_msleep`** — measured 1297 ms against an intended 1250 ms, drift by construction | settled |
 
 ---
 
@@ -214,6 +222,14 @@ link supervisor into the lamp thread if stacks get tight.
 
 Gate: `west build -t ram_report` and `rom_report` recorded in the journal at each milestone.
 The escape hatch is D20, taken only on measured evidence.
+
+**First measurements (2026-08-14, D49 spike):** 3 880 B of 8 KB (47.4 %), flash 13 972 B of
+60 KB. The estimate above allocated ~2.5 KB to "kernel + main thread"; the reality is that
+**3 766 of 3 878 B is kernel stacks** — `z_interrupt_stacks` 2 048 B, `z_main_stack` 1 024 B,
+`z_idle_stacks` 256 B — versus 66 B for all drivers combined. Sizing those three down (512/512/128)
+measures **1 704 B, 20.8 %**. Not adopted yet: stack sizing needs peak-usage evidence, not
+optimism. But the 8 KB question now has a real answer — the budget is dominated by tunables, not
+by code.
 
 ## Pin budget — SSOP-28
 
@@ -337,15 +353,20 @@ Remaining Phase 0 loose end: nothing is committed to git yet (D16).
 11. Tests: aggregation priority, TTL expiry, hook latency, daemon-down path.
 
 ### Phase 2 — Firmware
-12. Zephyr workspace, `west init`, mainline + `hal_microchip`; `blinky` on `pic32cm_pl10_cnano`.
+12. ✅ Zephyr workspace, `west init`, mainline + `hal_microchip` (D64, D65, ADR-0014); `blinky`
+    builds for `pic32cm_pl10_cnano`.
 13. **D49 spike, do this early — it gates the PCB:** get TCC0 PWM running on PL10. Add TCC nodes
     + pinctrl to the SoC/board devicetree, bind `pwm_mchp_tcc_g1`. If mainline resists, try
     Zephyr4Microchip; if it's genuinely missing, write it and upstream it. Success = a breathing
     LED on a PL10 Curiosity Nano.
+    Done in `firmware/boards/pic32cm_pl10_cnano.overlay` — mainline needed **no** change, since
+    the whole gap was the missing devicetree nodes. Visual confirmation still outstanding.
 14. `rnwf_at.c`: bounded ring-buffer line assembly, request/response with timeouts, unsolicited
     result dispatch, connect state machine (reset → AT → Wi-Fi → MQTT → subscribe) with backoff.
-15. `sim/fake_rnwf02.py` + `native_sim` over a PTY — full state machine tested against the real
-    broker with no hardware.
+    Core written free of Zephyr headers so it unit-tests under plain clang on macOS (D66).
+15. `sim/fake_rnwf02.py` — AT server + `paho-mqtt` bridge on the host, wired to the cnano's
+    SERCOM0 through a 3.3 V USB-UART adapter, tested against the real broker. **Not `native_sim`:**
+    Zephyr's POSIX architecture does not work on macOS (D66, ADR-0015).
 16. `lamp.c`: 3 PWM channels, ~100 Hz render, gamma-corrected steady/breathe/blink/flicker.
 17. `button.c` (GPIO IRQ + debounce) and `link.c` (supervision → amber flicker, WDT).
 18. Hardware bring-up: `EV10P22A` + `EV72E72A`, five jumpers (TX, RX, MCLR, 3V3, GND).
@@ -394,7 +415,9 @@ Debuggers already on hand (PICkit 5, PICkit Basic, Atmel-ICE, J-Link) all work v
 - **Host, no hardware:** `mosquitto_sub -t 'wigwag/#' -v` shows IDLE → BUSY → WAIT → IDLE against
   a real session; two concurrent sessions confirm WAIT beats BUSY; verified in both the VS Code
   extension and a terminal session.
-- **Firmware, no hardware:** `native_sim` + `fake_rnwf02.py` against the live broker.
+- **Firmware, no module:** `fake_rnwf02.py` on the host against the live broker, driving the real
+  cnano over SERCOM0 (ADR-0015). The AT core's parser and state machine additionally unit-test
+  under plain clang with no hardware and no Zephyr.
 - **D49 gate:** a breathing LED on PL10 hardware proves TCC PWM before any layout is committed.
 - **Footprint gate:** `ram_report` ≤ 8 KB with margin, recorded per milestone.
 - **Hook safety:** hooks emit nothing on stdout and `exit 0` with the daemon stopped.

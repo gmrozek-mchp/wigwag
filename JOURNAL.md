@@ -7,6 +7,248 @@ Entries record what was done, why, and — importantly — what was tried and re
 
 ---
 
+## 2026-08-14 — Phase 2 opened: Zephyr workspace, and **D49 passes on hardware**
+
+**Done**
+- Zephyr workspace from nothing: `west` 1.5.0 in a repo-root `uv` venv, `firmware/west.yml` as a
+  pinned minimal manifest, SDK 1.0.1 `arm-zephyr-eabi` only. ADR-0014, D64/D65/D67.
+- `firmware/` is now a real Zephyr application: `CMakeLists.txt`, `prj.conf`, `src/main.c`,
+  `boards/pic32cm_pl10_cnano.overlay`, plus `firmware/README.md` as a reproducible runbook.
+- **The D49 spike, in devicetree only — and it works on hardware.**
+  `firmware/boards/pic32cm_pl10_cnano.overlay` creates TCC0, its generic-clock channel and its
+  pinctrl group; `pwm_mchp_tcc_g1` binds. Mainline needed no patch, no Zephyr4Microchip fallback,
+  no new driver code. **LED0 breathes steadily and the 500 Hz carrier was confirmed on an
+  oscilloscope.** D49 is `settled`; TCC0 WO0/WO1/WO2 is safe to commit to the PCB.
+- ADR-0014 (workspace topology), ADR-0015 (module simulation on hardware, not `native_sim`).
+- `docs/PLAN.md`: D39 amended, D49 annotated, D64–D68 added, Phase 2 items 12/13/15 updated, and
+  the footprint section now carries measurements instead of only estimates.
+
+**Why**
+- The plan's sequence put D49 first because it gates the PCB, and the board is on the desk.
+- ADR-0006 said pin mainline deliberately, so the manifest carries an explicit SHA
+  (`357467a011cd2557a1a3f0b4be83d817c4addc9b`) rather than a branch or a release tag.
+- "Minimum Zephyr" was an explicit instruction, hence the 4-module `name-allowlist` and the
+  single-toolchain SDK.
+
+**The finding that reshaped Phase 2: `native_sim` cannot run on macOS**
+Zephyr's POSIX-architecture documentation says it *"is known to **not** work on macOS due to
+fundamental differences between macOS and other typical Unixes."* `native_sim` is a
+POSIX-architecture board, so `docs/PLAN.md` step 15 and D39 — fake module over a PTY, no hardware
+— were unbuildable on this machine. Found while planning, before any code was written, which is
+the only reason it cost nothing.
+
+Replacement (ADR-0015): the fake module runs on the Mac against the **real cnano** over SERCOM0,
+the same peripheral the PCB uses for the module (D46), with the console left on `sercom1`. That is
+strictly more faithful than the original plan — real SoC, real SERCOM driver, real 8 KB part — and
+it exercises SERCOM0 before the layout commits to it. The AT core will be written free of Zephyr
+headers so the parser and state machine still unit-test on any host under plain clang, which the
+`native_sim` plan never provided.
+
+**Verified**
+- **`microchip,tcc-g1-pwm` binds to PL10.** `CONFIG_DT_HAS_MICROCHIP_TCC_G1_PWM_ENABLED=y`,
+  `pwm_mchp_tcc_g1.c.obj` compiled, and `build/wigwag/zephyr/zephyr.dts` shows
+  `/soc/tcc@42001800` resolved with every property attributed to the overlay.
+- **The pin is right, decoded not assumed.** The resolved `pinmux = <0x5221>`; against
+  `MCHP_PINMUX` in `mchp_pinctrl_pinmux_pic32c.h` (port bits 0–3, pin 4–8, func 9–11, mux 12–15)
+  that is port b, pin 2, func `periph`, mux `f` — **PB02 / function F / TCC0 WO2**.
+- **PB02 is both LED0 and TCC0 WO2** — datasheet §2.3 pinout and multiplexing, cross-checked
+  against `PB2F_TCC0_WO2` in hal_microchip's generated pinctrl header. So the spike breathes the
+  board's own LED with no jumpers, and does not collide with the console on PB00/PB01.
+- **All four TCC values taken from the source of truth**, `hal_microchip`'s
+  `pic32cm6408pl10048.h` and `component/tcc.h`: `TCC0_BASE_ADDRESS 0x42001800`, `TCC0_IRQn 12`,
+  `TCC_CC[4]`, and `TCC_COUNT_Msk 0x0000FFFF`.
+- **Both clock IDs already existed** for this family — `CLOCK_MCHP_GCLKPERIPH_ID_TCC0` (PCHCTRL11)
+  and `CLOCK_MCHP_MCLKPERIPH_ID_APBC_TCC0` in `mchp_pic32cm_pl_clock.h`. Nothing upstream was
+  missing except the nodes themselves.
+- **The generic-clock channel must be declared in devicetree.**
+  `clock_control_mchp_pic32cm_pl.c` does `DT_FOREACH_CHILD(DT_NODELABEL(gclkperiph), ...)` at
+  init, so without a `tcc0_gclk` child the TCC binds cleanly, has its bus clock, and produces
+  nothing. Read the driver rather than trusting the node to work.
+- Blinky builds for `pic32cm_pl10_cnano`: flash 12 576 B, RAM 3 872 B.
+- D49 spike builds: flash 14 132 B (23.0 %), **RAM 3 880 B of 8 KB (47.4 %)**.
+
+**Verified on hardware** (`EV10P22A`, programmed over the on-board nEDBG)
+- **LED0 breathes steadily, and the 500 Hz carrier was confirmed on an oscilloscope** — not
+  inferred from the console. This is the D49 success criterion and it is met.
+- **The clock assumption in the overlay was right, measured from the device**:
+  `pwm_get_cycles_per_sec` returns **24 000 000**, exactly GCLK0 at 24 MHz with `prescaler = <1>`,
+  so the 2 000 000 ns period is a real 500 Hz and the duty has 48 000 counts of resolution.
+- Duty reaches the hardware across the full range: peak pulse 1 999 965 ns of 2 000 000 ns
+  (`gamma_pulse(255)`), i.e. essentially 100 %, and the LED goes fully dark at the trough.
+- Polarity is correct as `PWM_POLARITY_NORMAL` — the board's `GPIO_ACTIVE_HIGH` LED0 needed no
+  inversion.
+- `west flash` resets and runs the target: a capture immediately after flashing starts at
+  `breathe cycle 1 at 1292 ms`.
+
+**The breathe rate is 3.8 % slow, and the reason matters for `lamp.c`**
+The device's own uptime puts consecutive cycles **1296–1297 ms** apart against an intended 1250 ms
+(125 × 10 ms) — 0.771 Hz, not 0.800 Hz. Checked rather than guessed:
+`CONFIG_SYS_CLOCK_TICKS_PER_SEC=10000`, so a 0.1 ms tick and the usual one-tick round-up on a
+relative timeout accounts for only ~0.1 %. The rest is the loop's own work — roughly 0.3 ms per
+iteration, mostly `pwm_set_pulse_dt()` waiting on TCC `SYNCBUSY` across the clock-domain boundary,
+plus the once-per-cycle `printk` amortised over 125 steps.
+
+`k_msleep` measures the gap *between* iterations, so any work inside the loop is added to the
+period and the error accumulates by construction. **`lamp.c` must schedule on absolute deadlines**
+— `k_timer`, or `k_sleep(K_TIMEOUT_ABS_MS(...))` — so the rate is set by the clock and not by how
+long a render takes. Recorded as D70. Left unfixed in the spike, whose job was TCC PWM, but the
+code comment now states the measured figure rather than the intended one.
+
+**The 8 KB answer, first real data (ADR-0008)**
+`ram_report` attributes **3 766 of 3 878 B to `kernel/init.c`**: `z_interrupt_stacks` 2 048 B
+(52.8 %), `z_main_stack` 1 024 B (26.4 %), `z_idle_stacks` 256 B, threads ~336 B. Every driver
+combined — clock, PWM, serial, systick — is **66 B**.
+
+So the estimate's shape was wrong in an encouraging way: it budgeted ~2.5 KB for "kernel + main
+thread" and ~2.3 KB for three application threads, but the real budget is three tunable stack
+sizes. A what-if build at 512/512/128 measures **1 704 B, 20.8 %** — 2 176 B recovered from
+configuration alone. Not adopted: shrinking a stack without peak-usage evidence trades a number
+for an overflow. That happens when the real threads exist, with `CONFIG_INIT_STACKS` to justify
+each value.
+
+Also noted, not acted on: `printk("%llu", cycles)` drags in `__l_vfprintf` (1 156 B) plus
+`__aeabi_uldivmod` and `__udivmoddi4`. Flash is at 22 %, so it stays for now, but 64-bit formats
+are not free on an M0+.
+
+**Tried and rejected**
+- **Copying the JH01 family's TCC node wholesale.** `pic32cm_5164_jh.dtsi` has exactly the node
+  shape needed, and it is the right template — but three of its numbers are wrong for PL10: base
+  `0x42002400` vs `0x42001800`, IRQ 17 vs 12, and `max-bit-width = <24>` where **PL10's TCC
+  counter is 16-bit** (`TCC_COUNT_Msk == 0x0000FFFF`). The width one is the trap: it would have
+  built, bound and run, then silently accepted periods the counter cannot represent. Recorded as
+  D68.
+- **A Linux VM for genuine `native_sim`.** The documented workaround, and it matches the original
+  plan. Rejected because it is the most setup for the *least* faithful test now that the correct
+  silicon is on the desk.
+- **QEMU `mps2/an385` with uart1 on a TCP socket.** The strongest runner-up: native on macOS, real
+  `arm-zephyr-eabi` build, CI-able with no hardware. Rejected because it is a different SoC —
+  different UART driver, different clock tree, and `ram_report` numbers that say nothing about the
+  8 KB question. Pre-analysed in ADR-0015 as the fallback if hardware testing proves insufficient.
+- **Homebrew `gcc-arm-embedded`** (already installed) instead of the 1.4 GB SDK. Rejected: Zephyr's
+  ARM builds expect `arm-zephyr-eabi` with its bundled picolibc, and `gnuarmemb` means newlib plus
+  C-library Kconfig deviations — a poor trade for disk space.
+- **Blobless clone (`--filter=blob:none`)** for a smaller fetch. Rejected: a build reads most of
+  the tree, so the blobs arrive lazily one round-trip at a time, converting a one-off download
+  into recurring build latency. `--narrow -o=--depth=1` instead.
+- **A gamma lookup table, and `powf()`.** The table costs flash and the float costs a soft-float
+  library. Cubing the level in 32-bit integer arithmetic tracks the eye closely enough for a
+  diffused lamp; dividing the period before multiplying keeps every intermediate inside 32 bits.
+- **Writing a throwaway blinky into `firmware/`.** Used `zephyr/samples/basic/blinky` to prove
+  toolchain → build instead, so the repository's own app went straight to being the D49 spike.
+
+**The expensive trap of the session: a stale pack index installs a DFP that cannot flash this part**
+This burned real time and looked exactly like broken hardware, so it is worth the detail.
+
+`pyocd pack install pic32cm6408pl10048` installed `Microchip.PIC32CM-PL_DFP` **1.4.418**, and
+every connection attempt then failed identically:
+
+```
+E Error attempting to create component SCS: Memory transfer fault
+  (SWD/JTAG communication failure (FAULT ACK)) @ 0xe000ed00-0xe000ed03
+C Memory transfer fault (Error while running debug sequence 'ResetCatchSet' ...)
+```
+
+The debug port enumerates and then core debug space faults. Ruled out in order: SWD clock (50 kHz,
+100 kHz and 1 MHz all identical), and `--connect=under-reset`, which made it *worse* — `No ACK` at
+`DebugPortSetup`. `pyocd list` also shows the target with a `✖︎` even once the pack is installed,
+which is a red herring; the pack was installed and the target was resolvable
+(`pyocd pack find` → `Installed: True`).
+
+The clue came from the *fallback* working: MPLAB IPE programmed the part first time and logged
+`DFP Version Used : PIC32CM-PL_DFP,1.5.437` — a **newer pack than pyOCD had**.
+
+**Root cause: `pyocd pack install` resolves versions from a locally cached index that it never
+refreshes.** `~/Library/Application Support/cmsis-pack-manager/index.json` was dated **Jun 11**,
+two months old, and the only cached descriptor was `Microchip.PIC32CM-PL_DFP.1.4.418.pdsc`. So
+`pack install` behaved correctly and installed the newest version *it knew about*. It reported
+`Downloading descriptors (001/001)`, which reads like an index refresh but is just that one pack's
+descriptor.
+
+`pyocd pack update` rebuilt the index (1 812 descriptors, 32 MB), after which `pack find` offered
+**1.5.437**, `pack install` fetched it, and **plain `west flash` works with no options at all** —
+connect, erase, program, reset, run.
+
+So D25 (pyOCD runner) holds and is now verified on hardware; the whole episode was a stale cache.
+Recorded as D69 and documented in `firmware/README.md`, because the failure mode gives no hint of
+the cause.
+
+**Worth being honest about:** the first diagnosis was that the public index did not serve a working
+pack, and the first fix was to rezip MPLAB's unpacked 1.5.437 (pyOCD rejects a bare `.pdsc` —
+`File is not a zip file`) and pass `--tool-opt=--pack=…`. That worked, but it was a workaround for
+a misdiagnosis, and it would have left every future machine doing something strange and
+unnecessary. The real question — *why did it install an old version when the index has the new
+one?* — is what produced the one-line fix. The rezipped pack has been deleted.
+
+Two smaller mechanical traps found alongside:
+- **`west flash` invokes `pyocd` by name**, so installing it into `.venv` is not enough — `PATH`
+  must include `.venv/bin`, or the runner reports `required program pyocd not found`.
+- **The console port and the debug interface are one USB device.** With a serial capture open,
+  `ipecmd` failed outright — `java.lang.RuntimeException: Comm error`, `Programming Target Failed`
+  **mid-erase**, leaving the part partially programmed (recovered by reflashing with the port
+  closed). pyOCD, tested afterwards, tolerates it but drops to 0.18 kB/s from 0.52 kB/s. Close the
+  capture before flashing.
+
+**MPLAB X / `ipecmd` is not a dependency — that is now a requirement (D71)**
+`ipecmd` was used only to break the deadlock: it proved the board and probe were fine while pyOCD
+failed, and its log line `DFP Version Used : …1.5.437` was the clue that identified the stale
+index. Once pyOCD worked it stopped being needed, and the requirement is that the toolchain stays
+`west` + Zephyr SDK + pyOCD with the DFP from the public CMSIS index — no vendor IDE.
+
+Verified rather than assumed, because **every pyOCD flash until this point had reported
+`programmed 0 bytes … identical`** — which only exercises the verify path, not erase-and-write.
+Forced a real round trip with pyOCD alone: spike → blinky → spike, each step erasing and
+programming 12 800 bytes, with the console confirming the right image ran each time
+(`LED state: ON/OFF` for blinky, `breathe cycle 1` for the spike). So the no-vendor-IDE claim is
+tested, not hoped for.
+
+**A trap that will bite on a fresh machine**
+**Zephyr SDK 1.0.1 has no macOS host tools.** `west sdk install` prints *"SKIPPED: macOS host
+tools are not available yet"* and carries on, so the build silently depends on Homebrew's `cmake`,
+`ninja`, `dtc` and `gperf`. It works here because those were already installed. On a clean Mac the
+failure would look like a broken SDK rather than a missing prerequisite. Documented in
+`firmware/README.md` and recorded as D67.
+
+**A change made to the spike to make it observable**
+The first version printed a banner at boot and then looped silently, which made "is it running?"
+unanswerable: confirming it needs a reset, and the debugger cannot reset the target while the
+console port is open on the same USB device (see the trap above). Added a one-line-per-cycle
+heartbeat carrying uptime, carrier frequency, clock rate and peak pulse. That is what produced the
+timing measurement above — the drift would otherwise have gone unnoticed until `lamp.c`. Cost:
+80 bytes of flash, no RAM.
+
+**Open**
+- A 3.3 V USB-UART adapter is now a required bench item for the AT client (ADR-0015). Fallback if
+  there isn't one: move the AT link to the CDC port and build with the console off — workable but
+  blind.
+- Whether 1.4.418 itself is broken for this part or merely incompatible with pyOCD's
+  debug-sequence implementation is **not** diagnosed — 1.5.437 works, which was enough. A real
+  unknown, but not worth chasing.
+- Every flash now prints a `PIC32CM-JH_DFP … Overlapping memory regions` warning. **Benign**, and
+  documented in `firmware/README.md` so it does not get mistaken for using the wrong pack: pyOCD
+  has no part→pack lookup, so resolving `-t pic32cm6408pl10048` parses *every* installed pack and
+  filters by part number afterwards (`populate_target()` → `get_installed_targets()`, `board.py`).
+  Unrelated packs with malformed memory maps warn as they go past — that JH part's device-level
+  `PERIPHERALS` encloses the family-level `HPB0/1/2` and `DIVAS`. The timestamps prove it is
+  pre-connection: ~0.3 s, against ~1.0 s for `Loading … at 0x0c000000`.
+- pyOCD never refreshes its pack index automatically, so this will recur silently the next time a
+  part needs a DFP newer than the cache. `pack update` is cheap; it belongs in any setup runbook.
+- Stack sizes untuned, on purpose. Needs `CONFIG_INIT_STACKS` evidence.
+- The overlay is app-local. The proper home for the TCC0 node is
+  `dts/arm/microchip/pic32c/pic32cm_pl/common/pic32cm_pl.dtsi` upstream, covering all four PL10
+  packages — a genuine upstream contribution, and the ADR-0006 case for it is now strong since
+  the change is purely additive devicetree.
+
+**Next**
+D49 is closed, so the PCB is unblocked on the lamp side. Next is `rnwf_at.c` with its Zephyr-free
+core (D66) — but **read the RNWF02 AT command reference first**, via the Microchip MCP tools, so
+`fake_rnwf02.py` mirrors the module's real syntax rather than an invented one. A fake that agrees
+with an imagined protocol is worse than no fake, because it passes.
+
+Alongside it, SERCOM0 needs the same devicetree treatment TCC0 just got — a pinctrl group and a
+`gclkperiph` child — which is now a known quantity rather than a risk.
+
+---
+
 ## 2026-08-14 — Phase 1 host software: daemon, CLI, hook client, 93 tests
 
 Branch `phase1/host-software`.

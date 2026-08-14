@@ -4,6 +4,13 @@ host/.env
 *.pem
 *.key
 
+# --- west workspace (topdir is the repo root; pinned by firmware/west.yml) ---
+/.west/
+/zephyr/
+/modules/
+/bootloader/
+/tools/
+
 # --- build output ---
 build/
 twister-out*/

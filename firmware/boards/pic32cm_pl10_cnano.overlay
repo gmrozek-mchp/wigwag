@@ -1,0 +1,93 @@
+/*
+ * D49 — TCC0 PWM enablement for PIC32CM PL10.
+ *
+ * Mainline Zephyr has the driver (drivers/pwm/pwm_mchp_tcc_g1.c) and the binding
+ * (dts/bindings/pwm/microchip,tcc-g1-pwm.yaml), and hal_microchip has the pinmux macros and
+ * both clock IDs — but the PL10 devicetree defines no TC or TCC node at all, so nothing binds.
+ * Everything below is the missing board/SoC layer, in the shape mainline already uses for the
+ * sibling JH01 family (dts/arm/microchip/pic32c/pic32cm_jh/common/pic32cm_5164_jh.dtsi).
+ *
+ * Values verified rather than copied — the JH01 numbers are wrong for this part:
+ *   reg           0x42001800   TCC0_BASE_ADDRESS, hal_microchip pic32cm6408pl10048.h
+ *   interrupts    12           TCC0_IRQn, same header; datasheet Table 4-3
+ *   channels      4            TCC_CC[4] / TCC_CCBUF[4], component/tcc.h
+ *   max-bit-width 16           TCC_COUNT_Msk == 0x0000FFFF — the JH01's TCC is 24-bit, this
+ *                              one is not, and claiming 24 would silently accept periods the
+ *                              counter cannot represent
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include <zephyr/dt-bindings/pwm/pwm.h>
+
+/ {
+	soc {
+		tcc0: tcc@42001800 {
+			compatible = "microchip,tcc-g1-pwm";
+			reg = <0x42001800 0x80>;
+			interrupts = <12 0>;
+			clocks = <&mclkperiph CLOCK_MCHP_MCLKPERIPH_ID_APBC_TCC0>,
+				 <&gclkperiph CLOCK_MCHP_GCLKPERIPH_ID_TCC0>;
+			clock-names = "mclk", "gclk";
+			channels = <4>;
+			max-bit-width = <16>;
+			/*
+			 * GCLK0 is 24 MHz (board dts). At DIV1 a 16-bit counter reaches down to
+			 * 24e6/65536 = 366 Hz, so the 500 Hz lamp carrier below fits with 48000
+			 * counts of dimming resolution and no prescaler.
+			 */
+			prescaler = <1>;
+			#pwm-cells = <3>;
+			pinctrl-0 = <&tcc0_pwm_default>;
+			pinctrl-names = "default";
+			status = "okay";
+		};
+	};
+
+	/*
+	 * One lamp channel for the spike. On the PCB this becomes three (D46: WO0/WO1/WO2).
+	 */
+	pwmleds {
+		compatible = "pwm-leds";
+
+		lamp_yellow: lamp_yellow {
+			pwms = <&tcc0 2 PWM_USEC(2000) PWM_POLARITY_NORMAL>;
+		};
+	};
+
+	aliases {
+		lamp-yellow = &lamp_yellow;
+	};
+};
+
+&pinctrl {
+	tcc0_pwm_default: tcc0_pwm_default {
+		group1 {
+			/* PB02, peripheral function F. */
+			pinmux = <PB2F_TCC0_WO2>;
+		};
+	};
+};
+
+/*
+ * The generic clock channel is set up from devicetree children at init —
+ * DT_FOREACH_CHILD(DT_NODELABEL(gclkperiph), ...) in
+ * drivers/clock_control/clock_control_mchp_pic32cm_pl.c — so without this entry the TCC has a
+ * bus clock, binds cleanly, and produces nothing.
+ */
+&gclkperiph {
+	tcc0_gclk {
+		subsystem = <CLOCK_MCHP_GCLKPERIPH_ID_TCC0>;
+		gclkperiph-src = "gclk0";
+		gclkperiph-en = <1>;
+	};
+};
+
+/*
+ * PB02 carries both the Curiosity Nano's LED0 and TCC0/WO2 (datasheet §2.3), which is what
+ * makes this spike need no external wiring. Hand the pin to TCC0 and say so in the
+ * devicetree, rather than leaving two drivers able to claim it.
+ */
+&led0 {
+	status = "disabled";
+};

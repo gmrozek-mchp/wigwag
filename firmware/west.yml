@@ -1,0 +1,34 @@
+# wigwag firmware — west manifest
+#
+# T2 topology: this repository is the manifest repository, and the workspace topdir is the
+# repo root, so `zephyr/`, `modules/` and `.west/` land beside `firmware/` and are gitignored.
+# `firmware/` itself is the Zephyr application.
+#
+#   uv venv .venv && uv pip install --python .venv west
+#   .venv/bin/west init -l firmware
+#   .venv/bin/west update --narrow -o=--filter=blob:none
+#
+# ADR-0006: track mainline, but pinned to an explicit revision that is moved deliberately,
+# never floating. ADR-0008: pull only the modules a PIC32C Cortex-M0+ build actually needs —
+# a 2 GB checkout is not "minimum".
+manifest:
+  self:
+    path: firmware
+
+  remotes:
+    - name: upstream
+      url-base: https://github.com/zephyrproject-rtos
+
+  projects:
+    - name: zephyr
+      remote: upstream
+      # mainline `main` head on 2026-08-14.
+      revision: 357467a011cd2557a1a3f0b4be83d817c4addc9b
+      import:
+        # Everything else in Zephyr's manifest is for other vendors, other arches, or
+        # subsystems this design does not use (no networking — the RNWF02 owns it, ADR-0002).
+        name-allowlist:
+          - cmsis         # CMSIS-Core, Cortex-M
+          - cmsis_6       # CMSIS 6, used by the newer SoC ports
+          - hal_microchip # PIC32C SoC headers, base addresses, IRQ numbers
+          - picolibc      # default C library for arm
