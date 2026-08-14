@@ -200,9 +200,49 @@ instances. So the whole application is ~900 B against 3 766 B of kernel.
 `z_idle_stacks` 256 B — against 66 B for every driver combined. So the interesting number is not
 today's 47 %, it is that the three stack sizes are the entire budget and they are all tunable.
 
-They are *not* tuned yet: shrinking a stack without measuring peak usage trades a footprint
-number for a stack overflow. Sizing happens once the real threads exist, with
-`CONFIG_INIT_STACKS` / the thread analyzer used to justify each number.
+### Measuring stack utilisation
+
+Stack sizes are the one part of this budget that is easy to guess and expensive to guess wrong, so
+they are measured. `firmware/prj_stacks.conf` is a measurement-only overlay:
+
+```sh
+.venv/bin/west build -p -b pic32cm_pl10_cnano firmware -d build/stacks \
+    -- -DEXTRA_CONF_FILE=prj_stacks.conf
+.venv/bin/west flash -d build/stacks
+# then exercise the device hard, and read the console
+```
+
+`CONFIG_INIT_STACKS` fills every stack with `0xaa` before use — threads *and* the interrupt stack —
+and `CONFIG_THREAD_ANALYZER` walks each one to find where the pattern stops, printing every 10 s:
+
+```
+lamp            : STACK: unused  164 usage  348 /  512 ( 67 %); CPU:   3 %
+idle            : STACK: unused  164 usage   92 /  256 ( 35 %); CPU:  93 %
+main            : STACK: unused  164 usage  860 / 1024 ( 83 %)
+ISR0            : STACK: unused 1784 usage  264 / 2048 ( 12 %)
+```
+
+**The number is only as good as the exercise.** A peak happens during the deepest call chain that
+actually ran, so anything not provoked is not measured. Cover at minimum: the AT connect script, all
+four lamp behaviours, an unparseable payload, a link loss and recovery, and a keepalive timeout with
+a full reconnect.
+
+**Sanity-check the report before believing it.** The first run showed `unused 164` for three
+different stacks, which looked like a bug. Raising one stack from 512 to 768 moved `unused` to 420
+while `usage` stayed at 348 — so the report was honest and the coincidence real. Cheap experiment,
+worth repeating if a number looks too neat.
+
+Two results worth keeping:
+
+- **The ISR stack was 87 % idle** — 264 B used of 2048. Now `CONFIG_ISR_STACK_SIZE=1024` in
+  `prj.conf`, still 4× the measurement, returning 1 KB.
+- **`main` is the tight one at 860 of 1024 (84 %)**, not the thread whose size was guessed. It runs
+  `printk` formatting and the AT script's `vsnprintf`. Do not shrink it; if credentials with a
+  password are configured, `vsnprintf` builds a longer command and this should be re-measured.
+
+There is **no MPU on PIC32CM PL10**, so `CONFIG_HW_STACK_PROTECTION` is unavailable.
+`CONFIG_STACK_SENTINEL` is the software substitute and is enabled in the measurement overlay; it
+detects an overflow after the fact rather than preventing it.
 
 ## Notes for a Linux host
 
