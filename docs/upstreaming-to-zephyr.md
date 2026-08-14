@@ -1,11 +1,18 @@
 # Upstreaming to Zephyr mainline
 
-Two mainline bugs were found during Phase 2 (see `JOURNAL.md`, 2026-08-14). Both are fixed locally
-in `firmware/patches/` or in the board overlay, and both should go upstream — ADR-0006's ladder
-says fix it locally, then contribute it, rather than living on a fork.
+Three mainline issues were found during Phase 2 (see `JOURNAL.md`, 2026-08-14). Each is worked around
+locally — in `firmware/patches/` or in the board overlay — and each should go upstream, per ADR-0006's
+ladder: fix it locally, then contribute it, rather than living on a fork.
 
 This file holds everything needed to submit them, so the work does not have to be re-derived. All
 process details below were read from the Zephyr documentation on 2026-08-14, not recalled.
+
+**A caution earned the hard way.** Bug 3 went through three drafts. The first claimed two pins lost
+and a one-second boot delay, both from reading code and datasheet prose. Measurement killed the boot
+delay outright. A datasheet section then argued the pin loss was only one — so the report was narrowed
+— and a controlled A/B on hardware showed the original two-pin claim had been right all along, with
+the datasheet section simply not matching the silicon. Measure before asserting; where the datasheet
+and the board disagree, believe the board, and say which one you tested.
 
 Tree state when the bugs were found: mainline pinned at
 `357467a011cd2557a1a3f0b4be83d817c4addc9b` (`main`, 2026-08-14), Zephyr 4.4.99.
@@ -16,8 +23,9 @@ Tree state when the bugs were found: mainline pinned at
 |---|---|---|---|---|
 | 1 | `microchip,{tc,tcc}-g1-pwm` name the third `pwm-cell` `polarity`, not `flags` | — | — | not submitted |
 | 2 | `pic32cm_pl10_cnano` declares LED0 `GPIO_ACTIVE_HIGH`; hardware is active low | — | — | not submitted |
+| 3 | `pic32cm_pl10_cnano` enables `XOSC32K` (crystal disconnected by default), silently taking PA24 **and PA25** | — | — | not submitted |
 
-Searched upstream on 2026-08-14: **no existing issue or PR covers either.** Possibly adjacent, open:
+Searched upstream on 2026-08-14: **no existing issue or PR covers any of them.** Possibly adjacent, open:
 [#107066](https://github.com/zephyrproject-rtos/zephyr/issues/107066) "Unexpected DT binding
 inference for specific properties (pwms)".
 
@@ -46,23 +54,23 @@ Commit message rules that bite:
 - Body lines ~75 characters or less; explain what, why, assumptions, and how it was verified.
 - `Fixes #1234` auto-closes on merge.
 - Prefer **small, self-contained PRs** — "reviewed more quickly and reviewed more thoroughly".
-  Hence two PRs here, not one.
+  Hence three PRs here, not one.
 
 ## Routing
 
-Both files fall under the same `MAINTAINERS.yml` area:
+All three touch the same `MAINTAINERS.yml` area:
 
 ```
 Microchip PIC32 Platforms:
   maintainers: ArunMCHP, NhMchp
   collaborators: fabin-mchp, Farsin-Nasar-Microchip, mchp-asif,
                  sunil-abraham, AzharMCHP, nandojve
-  files: boards/microchip/pic32*/          <- bug 2
+  files: boards/microchip/pic32*/          <- bugs 2 and 3
          dts/bindings/*/microchip,*-g*     <- bug 1
   labels: "platform: Microchip PIC32"
 ```
 
-Both are Microchip-authored files (© 2026 Microchip), so there may be an internal review path in
+All are Microchip-authored files (© 2026 Microchip), so there may be an internal review path in
 parallel with the upstream PR.
 
 ---
@@ -206,6 +214,130 @@ GPIO, so the board's `led0` node is disabled in our overlay and the wrong flag d
 It is still wrong for everyone else.
 
 ---
+
+---
+
+## Bug 3 — `pic32cm_pl10_cnano` enables XOSC32K, but its crystal is disconnected by default
+
+Found the hard way: two lamps on TCC0 outputs simply never lit, with no error anywhere.
+
+### Evidence
+
+`boards/microchip/pic32c/pic32cm_pl10_cnano/pic32cm_pl10_cnano.dts` enables the external 32.768 kHz
+oscillator, with clock-failure detection:
+
+```
+xosc32k: xosc32k {
+        compatible = "microchip,pic32cm-pl-xosc32k";
+        xosc32k-cfd-en = <1>;
+        xosc32k-startup-time = "16K";
+        xosc32k-en = <1>;
+};
+```
+
+But the board leaves that crystal **unconnected**. Its user guide is explicit: *"The crystal is not
+connected to the target MCU by default, as the GPIO pins are routed to the edge connector"*, and
+connecting it means cutting straps J107/J108 and soldering J109/J110.
+
+**Consequence: PA24 and PA25 both stop working for anything else, silently.**
+
+Established by a controlled A/B on hardware — identical firmware, identical wiring, one devicetree
+property changed — with lamps on TCC0 WO0 (PA24) and WO1 (PA25), driven to full brightness by a
+power-on lamp test:
+
+| | `xosc32k-en = <1>` | `xosc32k-en = <0>` |
+|---|---|---|
+| PA24 (WO0) | no output | works |
+| PA25 (WO1) | no output | works |
+
+The pinctrl assignment is accepted and then ignored, with no diagnostic anywhere, because the
+override happens inside the oscillator rather than in PORT.
+
+Datasheet §13.5.1 states this unconditionally: *"The XTAL32K1 and XTAL32K2 pins are automatically
+configured when the XOSC32K oscillator is enabled."*
+
+**A datasheet discrepancy worth reporting alongside it.** §13.4.2.2 says the override is
+mode-dependent: *"In External Clock (EXTCLK) mode, only the XTAL32K1 pin is overridden and controlled
+by OSC32KCTRL, while the XTAL32K2 pin may be used as a GPIO pin."* This board is in EXTCLK mode —
+`xosc32k-xtal-en` defaults to 0 and the board does not set it, confirmed in the generated devicetree
+as `..._xosc32k_xtal_en 0`, so XTALEN reaches the register as 0 — and yet **PA25 is overridden too**.
+Either §13.4.2.2 does not describe this silicon or the hardware behaves unconditionally as §13.5.1
+says. That is a question for Microchip rather than for Zephyr, but it is worth stating in the issue so
+nobody else trusts the mode-dependent sentence.
+
+Nothing in the board configuration consumes XOSC32K — `gclkgen0` is sourced from `oschf` — so the
+oscillator is enabled, unusable, and unused. The configuration is also internally inconsistent: the
+board sets `xosc32k-startup-time = "16K"` while leaving `xosc32k-xtal-en` at 0, and §13.6.7 says the
+start-up time is disregarded when XTALEN is 0.
+
+**Measured, and it is *not* a boot-time problem.** The device reaches `main()` **5 ms** after reset
+either way. The driver does spin on `XOSC32KRDY` via
+`WAIT_FOR(..., TIMEOUT_XOSC32KCTRL_RDY, NULL)`, with the constant at `1000000` and `WAIT_FOR`
+documented in microseconds, which reads like a one-second stall — it is not. Keep any boot-delay claim
+out of the report.
+
+(An earlier attempt to measure this by timing reset to first console byte gave ~1.6 s, which is
+pyOCD's own startup and SWD connect, not the device. Timing a target through a debugger measures the
+debugger.)
+
+### Suggested fix
+
+Set `xosc32k-en = <0>` (and drop `xosc32k-cfd-en`) in the board devicetree, with a comment pointing at
+the straps for users who solder the crystal on. A devicetree should describe the board as shipped, and
+as shipped this crystal is not attached.
+
+### Before submitting
+
+- Already confirmed by the A/B above, so no further bench work is needed for the Zephyr fix itself.
+- **Raise the §13.4.2.2 discrepancy with Microchip separately.** The Zephyr PR does not depend on it,
+  but a datasheet that says XTAL32K2 stays usable in EXTCLK mode, on a part where it does not, will
+  cost someone else the same afternoon.
+- Check the sibling PIC32CM/PIC32CK boards for the same pattern — if `pic32cm_jh01_cpro` and friends
+  enable XOSC32K with equally disconnected crystals, this is one fix across several boards rather
+  than one board's slip.
+
+### Commit message
+
+```
+boards: microchip: pic32cm_pl10_cnano: do not enable XOSC32K by default
+
+The board devicetree enables the external 32.768 kHz oscillator, but the
+board leaves its crystal disconnected: the user guide states the crystal is
+not connected to the target MCU by default because the GPIO lines are routed
+to the edge connector, and attaching it requires cutting straps J107/J108.
+
+Enabling it silently costs PA24 and PA25. Both are automatically configured by
+OSC32KCTRL whenever XOSC32K is enabled (datasheet 13.5.1), so a pinctrl
+assignment to either is accepted and then ignored, with no diagnostic, because
+the override happens in the oscillator rather than in PORT.
+
+Confirmed by a controlled comparison on hardware: with lamps on TCC0 WO0 (PA24)
+and WO1 (PA25) driven to full brightness, neither produces output with
+xosc32k-en = 1, and both work with it set to 0. Identical firmware and wiring
+otherwise.
+
+Note this happens in External Clock mode - xosc32k-xtal-en defaults to 0 and
+the board does not set it - even though 13.4.2.2 states that in that mode only
+XTAL32K1 is overridden and XTAL32K2 remains available as a GPIO. The observed
+behaviour follows 13.5.1 instead.
+
+The configuration is also internally inconsistent: xosc32k-startup-time is set
+to "16K" while xosc32k-xtal-en is 0, and 13.6.7 states the start-up time is
+disregarded when XTALEN is 0.
+
+Nothing in the board configuration uses XOSC32K; gclkgen0 is sourced from
+oschf. Disable it by default and leave a pointer to the straps for users who
+fit the crystal.
+
+Found while driving three TCC0 PWM outputs on this board, two of which land on
+PA24 and PA25 and produced nothing.
+
+Signed-off-by: Your Name <you@example.com>
+```
+
+This one is **not** carried in `firmware/patches/` — wigwag disables XOSC32K in its own board overlay
+(D82), which is the right place for an application-specific clock choice regardless of what upstream
+does.
 
 ## If the binding fix is accepted
 

@@ -10,4 +10,6 @@ target_sources(app PRIVATE
   src/rnwf_at.c     # Zephyr-free core, also built for the host tests and the simulator
   src/rnwf_uart.c   # the Zephyr transport behind struct rnwf_at_io
   src/link.c        # link supervision: may the device believe what it shows?
+  src/lamp.c        # pure animation: (state, link, time) -> three levels
+  src/lamp_pwm.c    # the Zephyr renderer: gamma, polarity, its own thread
 )

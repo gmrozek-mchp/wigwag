@@ -188,12 +188,14 @@ D49 spike:
 |---|---|---|---|
 | `samples/basic/blinky` | 12 576 B | 3 872 B | 47.3 % |
 | D49 spike (lamp only) | 14 132 B | 3 880 B | 47.4 % |
-| **lamp + AT client + SERCOM0 transport** | **17 816 B** | **4 800 B** | **58.6 %** |
-| lamp only, stacks sized down (measurement, not adopted) | 13 972 B | 1 704 B | 20.8 % |
+| lamp + AT client + SERCOM0 transport | 17 816 B | 4 800 B | 58.6 % |
+| **three lamps + link supervision, ISR stack tuned** | **19 708 B** | **4 440 B** | **54.2 %** |
 
 The AT client's 920 B is attributed exactly: `at_client` (`struct rnwf_at`) 624 B, `rnwf_uart.c`
 268 B (a 256-byte receive ring plus indices), and 44 B of UART driver state for both SERCOM
-instances. So the whole application is ~900 B against 3 766 B of kernel.
+instances. The lamp renderer adds ~632 B (a 512 B thread stack plus its thread struct) and link
+supervision 32 B. RAM went *down* between those last two rows despite gaining a thread, because the
+ISR stack was tuned on measurement at the same time.
 
 **Almost all of it is kernel stacks, not application code.** `ram_report` attributes 3 766 B of
 3 878 B to `kernel/init.c` — `z_interrupt_stacks` 2 048 B, `z_main_stack` 1 024 B,

@@ -206,6 +206,14 @@ FET selection: logic-level N-channel, Vgs(th) low enough to fully enhance at 3.3
 | **D75** | **Link supervision needs positive liveness in both failure domains**, not just absence of bad news. Demonstrated on hardware: with its module killed, the device sat in `READY` reporting `LINKED` indefinitely. `link.c` polls the module with a bare `AT` *and* subscribes to `wigwag/host_online` — the module poll cannot see a dead broker, and the topic cannot see a dead module | settled |
 | **D76** | **Module UART = SERCOM0 on PA04 (PAD0/TX) / PA05 (PAD1/RX)**, mux C, reached via a `wigwag,module-uart` chosen node. Everything else is taken by the debugger, the crystal footprint, the touch button, or the MVIO domain | settled |
 | **D77** | **Interrupt-driven UART receive into a 256-byte static ring**, drained every 10 ms; overruns counted and reported. Polled receive drops bytes at 115200 with no deep FIFO | settled |
+| **D78** | **Stack sizes are measured, never guessed** — `firmware/prj_stacks.conf` + thread analyzer, and the exercise must provoke every path or the number is meaningless. Peaks: main 860/1024, lamp 348/512, idle 92/256, ISR 264/2048 | settled |
+| **D79** | **`CONFIG_ISR_STACK_SIZE=1024`** on that evidence (4× the measured 264 B), returning 1 KB — 12.5 % of the part's SRAM. RAM 66.7 % → 54.2 % | settled |
+| **D80** | **No MPU on PL10**, so `HW_STACK_PROTECTION` is unavailable; `STACK_SENTINEL` is the measurement-build substitute and detects overflow after the fact | settled |
+| **D82** | **XOSC32K disabled on the cnano** — it owns PA24/PA25 (XTAL32K1/2) and overrides their GPIO/peripheral function per datasheet §13.4.2.2, silently killing two lamps. The board's crystal is also disconnected by default, so the driver was waiting on an oscillator that could never start | settled |
+| **D83** | **Gamma lives in `lamp.c`, not the renderer** — it is pure arithmetic, and on the Zephyr side it shipped a bug where every level below 41 rendered as off. Tests now cover monotonicity, endpoints and dead zones | settled |
+| **D84** | **Power-on lamp test**: each lamp to full for 400 ms, then all three. A dim steady state proves nothing; full brightness would have exposed both of the above immediately | settled |
+| **D85** | **`LAMP_IDLE_DIM = 128`** (12.6 % duty), chosen by eye from a hardware sweep. Revisit with real 10 mm lamps at 20–60 mA; `wigwag/brightness` is the place for per-desk trimming | settled |
+| **D81** | **The AT service loop runs on the main thread**, renamed `at` for reports. A dedicated thread costs ~600 B (~7 % of SRAM) and would *not* reduce peak depth, since main's peak is `max(init, loop)` rather than their sum. Revisit when a second context needs the AT client, when the WDT needs multi-thread liveness, or if credentials lengthen its commands | settled |
 
 ---
 

@@ -7,6 +7,261 @@ Entries record what was done, why, and — importantly — what was tried and re
 
 ---
 
+## 2026-08-14 — "PA24 isn't working": one pin conflict, one gamma bug, and a test that couldn't reach it
+
+Reported from the bench: flickering on PB02 and PA25, nothing at all on PA24. Two independent
+faults, and the flicker was not one of them.
+
+**The flicker was correct.** The exercise script ended by killing the fake module, so the keepalive
+timed out, the link went untrusted, and the lamps went to the fail-visible pattern — yellow and red
+stuttering, **green deliberately held off**. Green means "idle, ready for you", and a blind device
+must never imply that. So the report was actually evidence that PA25 had started working.
+
+**Fault 1: XOSC32K was silently overriding the pinmux.** PA24 and PA25 are XTAL32K1 and XTAL32K2, and
+the board devicetree enables the 32.768 kHz oscillator (`xosc32k-en = <1>`). Datasheet §13.5.1 is
+unconditional: "the XTAL32K1 and XTAL32K2 pins are automatically configured when the XOSC32K
+oscillator is enabled". TCC0's mux on both pins was accepted and then ignored — the same shape of
+failure as the `polarity`/`flags` binding bug, and just as invisible, because the override happens in
+the oscillator rather than in PORT.
+
+Disabling it is safe here: the board's crystal is **not connected by default** (its user guide routes
+those I/O lines to the edge connector; attaching it means cutting straps J107/J108), nothing consumes
+XOSC32K since `gclkgen0` comes from the internal 24 MHz OSCHF, and there is no RTC. Recorded as D82.
+
+**This took three attempts to state correctly, which is the more useful story.**
+
+1. First version: "it takes both pins and costs a one-second boot delay". The pin claim came from
+   §13.4.2.2's crystal-mode sentence; the delay came from reading `TIMEOUT_XOSC32KCTRL_RDY = 1000000`
+   with `WAIT_FOR` documented in microseconds.
+2. **Measured the boot delay: there isn't one.** The device reaches `main()` **5 ms** after reset,
+   with or without the oscillator enabled, so a one-second stall was never possible. The claim would
+   have gone into a bug report as fact.
+
+   Worth recording how that number was nearly missed. The first attempt timed reset to first console
+   byte and got ~1.6 s, which looked alarming for a 19 KB image on a 24 MHz part. Almost all of it is
+   **pyOCD**: interpreter startup, pack load, SWD connect and teardown, measured at 0.93-1.68 s on its
+   own, varying run to run. The banner was already sitting in the OS buffer before `pyocd reset` even
+   exited. Timing a device through a debugger measures the debugger.
+3. Chasing why, I found `xosc32k-xtal-en` defaults to 0 — External Clock mode — where §13.4.2.2 says
+   *only* XTAL32K1 is overridden and XTAL32K2 stays usable. So I narrowed the report to one pin.
+4. **The bench said otherwise.** Both pins had been floating. A controlled A/B settled it: identical
+   firmware and wiring, only `xosc32k-en` changed, lamps driven to full by the power-on test — both
+   dead with the oscillator on, both alive with it off. XTALEN really is 0, confirmed in
+   `devicetree_generated.h`, so **§13.4.2.2 does not describe this silicon** and §13.5.1 does.
+
+Two lessons worth more than the fix. **Measure before asserting** — one inference was wrong, one was
+right, and neither was knowable without the bench. And **where the datasheet and the board disagree,
+believe the board, and record which one you actually tested.** The §13.4.2.2 discrepancy is now flagged
+in `docs/upstreaming-to-zephyr.md` as a question for Microchip, separate from the Zephyr fix.
+
+Bonus confirmation from the same session: holding WAIT on hardware showed red steady and then a slow
+blink, so the **30 s escalation works on the device**, not just in host tests.
+
+**Fault 2: my gamma arithmetic threw away the low end.** `gamma_pulse()` computed `level³ / 255²`
+first, which truncates:
+
+| level | old | fixed |
+|---|---|---|
+| 40 | **0.000 %** | 0.386 % |
+| 48 | 0.392 % | 0.667 % |
+| 128 | 12.549 % | 12.648 % |
+
+**Every perceptual level below 41 rendered as fully off**, and 41–48 all collapsed to one value. IDLE
+green ran at half its intended duty. Rewritten to scale in three steps so intermediates stay large
+and inside 32 bits, with no 64-bit helpers pulled in.
+
+**Why 1281 host checks missed it: the function was on the wrong side of the boundary.**
+`gamma_pulse()` lived in `lamp_pwm.c`, the Zephyr renderer, where no host test can reach — even
+though it is pure integer arithmetic with no hardware dependency. Moved to `lamp.c` as
+`lamp_gamma_pulse()` and covered by tests for monotonicity, endpoints, and **absence of a dead zone**.
+The lesson generalises: the core/adapter split only protects what is actually on the core side, and
+"is this pure?" is the test, not "does it feel like hardware?".
+
+**Added a power-on lamp test**, because both faults would have been obvious in the first second if
+anything had ever driven the lamps at full brightness. Each lamp to 100 % for 400 ms, then all three.
+Worth keeping permanently on an appliance whose only output is light — a 0.4 %-duty steady green
+proves nothing, and the plan already wants an all-lamps pattern for provisioning mode anyway.
+
+**IDLE brightness, chosen by eye rather than by argument.** Swept 48/64/80/96/128/160 on hardware at
+4 s each; **128 (12.6 % duty)** picked. `LAMP_IDLE_DIM` now carries the caveat that the bench
+understates the product — the Curiosity Nano drives an LED through a series resistor at a few mA,
+while the PCB drives 10 mm diffused lamps from 5 V through FETs at 20–60 mA — so this wants
+revisiting with real lamps, and `wigwag/brightness` is the proper home for per-desk trimming.
+
+Verified independently: the measured pulse width at IDLE was **~13 µs**, against a computed 13 339 ns
+for level 48. That match confirmed the pin, the mux, the gamma and the PWM path in one measurement.
+
+**A test that encoded the wrong thing.** `test_idle_is_green_only_and_dim()` asserted
+`level < 128` — and the value chosen by eye was exactly 128, so it would have rejected the right
+answer. Rewritten to assert on rendered *duty* being under a quarter of the period, because the level
+is on a cube-root scale and a number that looks like "half" is nothing of the sort.
+
+**Process note.** I twice ran a visual hardware test and only then told the user to look, and I was
+also holding the serial port so the console was invisible to them. Both are bad habits for
+hardware work: announce observable tests *before* triggering them, and hand over the port
+(`python -m serial.tools.miniterm /dev/cu.usbmodem… 115200`) rather than capturing it.
+
+---
+
+## 2026-08-14 — Why the AT loop stays on the main thread
+
+Asked whether main holding the app logic is normal in Zephyr, or whether it should be a named task.
+
+**It is normal.** `main()` is invoked from `bg_thread_main()` in `zephyr/kernel/init.c` — the main
+thread *is* the kernel's initialization thread, running at `CONFIG_MAIN_THREAD_PRIORITY` (default 0),
+and the Kconfig help notes "main() can then change its priority if desired". Using it as a service
+loop is idiomatic; plenty of Zephyr applications never create a thread at all.
+
+**But the interesting part is what splitting would and would not buy**, and the measurements from the
+stack work answered it:
+
+- **It costs ~600 bytes, about 7 % of this part's SRAM.** main would keep a stack for init while a
+  new `at` thread carried the loop: ~512 + ~1024 + 512 (lamp) against today's 1024 + 512, plus ~112 B
+  of thread struct.
+- **It would not relieve the pressure it looks like it should.** main's measured peak is
+  `max(init depth, loop depth)`, not their sum, because init completes before the loop starts.
+  Splitting duplicates capacity rather than lowering the maximum. main sits at 860 of 1024 B because
+  of `printk` formatting and the AT script's `vsnprintf`; the cure is narrower format strings, not
+  another stack. Worth writing down because "the stack is 83 % full, give it its own thread" is a
+  tempting and wrong conclusion.
+
+**Decision (D81): keep the loop on main, and name it honestly.** The body is extracted into
+`at_service()` so `main()` reads as orchestration, and `k_thread_name_set(k_current_get(), "at")`
+makes reports say `at` instead of a thread-object address. That call compiles out entirely when
+`CONFIG_THREAD_NAME` is off, which it is in the shipping build — it exists for the measurement
+overlay, where a report full of hex addresses is nearly useless.
+
+Verified: after the refactor the analyzer prints `at : STACK: unused 164 usage 860 / 1024 (83 %)` —
+identical depth, so extracting the function cost nothing, and the name lands. Flash +28 B, RAM
+unchanged at 4 440 B.
+
+**What would change the decision**, recorded in a comment above `at_service()` so it is found when
+it matters rather than rediscovered:
+- a second context needing the AT client concurrently — `button.c` will want to publish from an
+  interrupt, and while a flag consumed by this loop suffices, a message queue feeding a dedicated
+  thread is the textbook shape if it grows;
+- the watchdog needing independent evidence that more than one thread is alive;
+- credentials lengthening the AT commands, since that deepens `vsnprintf` on this very stack.
+
+Also noted: ADR-0008 budgeted three threads at 768 B each, but named *merging* the link supervisor as
+its fallback if tight. Evidence agrees — link supervision is event-driven with one grace timer and
+needs no thread of its own, so the plan's three-thread shape is now two by choice rather than by
+omission.
+
+---
+
+## 2026-08-14 — lamp.c: three lamps, and CONTEXT.md's table becomes executable
+
+**Done**
+- `firmware/src/lamp.{h,c}` — pure animation: `(state, link condition, time) -> three perceptual
+  levels`, plus a state parser. No Zephyr, so every behaviour is host-testable. Same split as
+  `rnwf_at.c` against `rnwf_uart.c`, which is now the established pattern in this codebase.
+- `firmware/src/lamp_pwm.{h,c}` — the Zephyr renderer: gamma, per-lamp polarity, and its own thread.
+- `firmware/tests/test_lamp.c` — **511 checks**, encoding CONTEXT.md's lamp table as assertions.
+  Three suites now total **636 checks, 0 failures**.
+- Three lamps in the overlay, and `main.c` shrinks to orchestration now that animation has a home.
+
+**The pin assignment, and a useful accident**
+| Lamp | Channel | Pin | Wiring | Polarity |
+|---|---|---|---|---|
+| green | WO0 | PA24 | external LED + 470R–1k | active **high** |
+| red | WO1 | PA25 | external LED + 470R–1k | active **high** |
+| yellow | WO2 | PB02 | the board's own yellow LED | active **low** |
+
+PA24/PA25 are the 32.768 kHz crystal's I/O lines, which the board routes to the edge connector by
+default (straps J107/J108 intact), so they were free without rework. PB08/PB09 would also have
+carried WO0/WO1 but are the touch button and *not* connected to the edge connector by default.
+
+The accident worth keeping: **this board genuinely mixes polarity**, and the boot line proves it is
+resolved per lamp — `lamps on tcc@42001800 ch0/2/1, flags 0/1/0`. The PCB will be uniformly active
+high through low-side FETs (D26), so a design that assumed one polarity would have worked on the
+bench and failed on the product, or vice versa. Mixed hardware forced the right shape.
+
+**Two subtleties the tests pinned down**
+- **WAIT's 30 s escalation measures how long you have been waiting, not time since the last
+  message.** `lamp_pwm_set_state()` is therefore idempotent: re-setting the current state does not
+  restart the clock. Without that, the host's repeated BUSY heartbeats would be harmless but any
+  repeated state would hold its own escalation off forever. Tested both ways, including that a fresh
+  WAIT on a device up for an hour shows steady red rather than blinking immediately.
+- **An unparseable payload keeps the previous state.** Inventing one is worse than showing a
+  slightly old one, and link supervision is what catches a host that has stopped making sense. The
+  parser matches the `"state"` key before its value, so `"reason":"WAIT for permission"` cannot be
+  read as a state — one of eight rejection cases under test.
+
+**Fail-visible, made concrete**
+The flicker holds **green off** deliberately. Green means "idle, ready for you", and the one thing a
+blind device must never imply is that everything is fine. Tests assert green stays dark while
+unlinked in all four states, that the pattern is not static, and that it does not track the BUSY
+breathe closely enough to be mistaken for it. The device also **boots untrusted**, so the lamps
+flicker from the first frame until something proves otherwise rather than looking idle while
+connecting.
+
+**Why the renderer has its own thread**
+`uart_poll_out()` blocks its caller for up to ~24 ms on a full-length AT command — two and a half
+frames, visible as a hitch. The render thread runs at cooperative priority −1 so it preempts the AT
+loop's blocking transmit. This is the concrete reason the plan's three-thread structure exists,
+rather than a stylistic choice.
+
+**Verified on hardware** — full sequence, driven by publishing to the real broker:
+```
+wigwag: lamps on tcc@42001800 ch0/2/1, flags 0/1/0
+wigwag: link UNLINKED (starting) ... at READY ... state IDLE
+wigwag: host_online = 1 ... link LINKED (ok)
+wigwag: state BUSY ... state WAIT ... state ERROR
+wigwag: host_online = 0 ... link UNLINKED (host gone)
+```
+
+**Measured** — flash 19 436 B (31.6 %), RAM **5 464 B of 8 KB (66.7 %)**. The 632 B increase is the
+render thread: 512 B stack, ~112 B thread struct, ~12 B shared state. Stacks now total 3 840 B of
+the 5 464 — still the whole story of this budget, and still untuned.
+
+**Then the stacks got measured, and the guesses were wrong in an instructive direction**
+
+`firmware/prj_stacks.conf` is a measurement-only overlay: `CONFIG_THREAD_ANALYZER` (which selects
+`CONFIG_INIT_STACKS`) fills every stack with `0xaa` — threads *and* the interrupt stack — and prints
+where the pattern stops, every 10 s, via `printk` rather than pulling in the logging subsystem.
+
+After an exercise covering the connect script, all four lamp behaviours, an unparseable payload, a
+link loss and recovery, a keepalive timeout and a full reconnect:
+
+| Stack | Size | Peak | Free |
+|---|---|---|---|
+| **main** | 1024 | **860** | **164 (16 %)** |
+| lamp | 512 | 348 | 164 (32 %) |
+| idle | 256 | 92 | 164 |
+| **ISR0** | 2048 | **264** | **1784 (87 % idle)** |
+
+**The lamp stack I flagged as a risky guess was fine. `main` is the tight one at 84 % full** — and
+`main` is the stack nobody had questioned. It runs `printk` formatting and the AT script's
+`vsnprintf`, and it is the one to watch: if credentials with a password are ever configured, that
+`vsnprintf` builds a longer command and this needs re-measuring. Exactly the argument for measuring
+rather than reasoning about which number looks suspicious.
+
+**Acted on the biggest one:** `CONFIG_ISR_STACK_SIZE=1024`, still 4× the measured 264 B, because the
+only interrupt sources here are systick and SERCOM0 receive and neither nests. **RAM 5 464 → 4 440 B,
+66.7 % → 54.2 %** — 1 KB returned, 12.5 % of all the SRAM on the part, on evidence. Verified the
+tuned image still runs the full sequence on hardware afterwards.
+
+**A report that looked like a bug and was not.** The first run showed `unused 164` for three
+different stacks, which is too neat to believe. Raising the lamp stack from 512 to 768 moved `unused`
+to 420 while `usage` stayed at 348 — so the tool was honest and 512−348, 256−92 and 1024−860 really
+do all equal 164. Cheap discriminating experiment; worth repeating whenever a measurement looks
+suspiciously tidy. Also added `CONFIG_THREAD_NAME=y`, without which the analyzer prints
+thread-object addresses instead of names and the mapping is guesswork.
+
+Recorded as **D78** (measure stacks with the overlay, never guess) and **D79** (ISR stack 1024 on
+measured evidence).
+
+**Open**
+- `main` at 84 % is the live risk, and it grows if a Wi-Fi password or MQTT credentials are
+  configured. Re-measure then; the alternative is moving the AT loop off `main` into its own thread.
+- **There is no MPU on this part**, so `CONFIG_HW_STACK_PROTECTION` is unavailable.
+  `CONFIG_STACK_SENTINEL` is in the measurement overlay only — it catches an overflow after the fact
+  rather than preventing it, and it is not in the shipping build.
+- No watchdog yet, and the device still never publishes `wigwag/online = 1`.
+
+---
+
 ## 2026-08-14 — link.c: the device stops being able to lie
 
 Built before `lamp.c` deliberately. Until link supervision exists, a renderer can only produce a

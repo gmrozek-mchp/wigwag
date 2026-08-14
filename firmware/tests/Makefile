@@ -14,17 +14,24 @@ LDFLAGS ?= -fsanitize=address,undefined
 BUILD := build
 BIN   := $(BUILD)/test_rnwf_at
 LINK  := $(BUILD)/test_link
+LAMP  := $(BUILD)/test_lamp
 SIM   := $(BUILD)/at_host
 SRCS  := test_rnwf_at.c ../src/rnwf_at.c
 DEPS  := ../src/rnwf_at.h ../src/rnwf_at_cmds.h
 
-.PHONY: all link sim clean
-all: $(BIN) $(LINK)
+.PHONY: all link lamp sim clean
+all: $(BIN) $(LINK) $(LAMP)
 	./$(BIN)
 	./$(LINK)
+	./$(LAMP)
 
 $(BIN): $(SRCS) $(DEPS) | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $(SRCS) $(LDFLAGS)
+
+lamp: $(LAMP)
+	./$(LAMP)
+$(LAMP): test_lamp.c ../src/lamp.c ../src/lamp.h | $(BUILD)
+	$(CC) $(CFLAGS) -o $@ test_lamp.c ../src/lamp.c $(LDFLAGS)
 
 link: $(LINK)
 	./$(LINK)

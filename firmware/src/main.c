@@ -1,97 +1,30 @@
 /*
  * wigwag — firmware entry point.
  *
- * Currently two things: the D49 lamp (TCC0 PWM, proven on hardware) and the RNWF02 AT client
- * talking to the module over SERCOM0. It is not the finished device — the received state does not
- * yet drive the lamps, which is lamp.c's job.
- *
- * On the PL10 Curiosity Nano the lamp is the board's own LED0, because PB02 carries both LED0 and
- * TCC0/WO2, and that LED is active low (D72) — polarity comes from devicetree and is printed at
- * boot so a silent regression cannot hide (D74).
+ * Wires the pieces together and owns the AT loop. Everything with behaviour of its own lives
+ * elsewhere: rnwf_at.c speaks to the module, rnwf_uart.c carries the bytes, link.c decides whether
+ * the device may believe what it shows, and lamp.c/lamp_pwm.c render it.
  *
  * No dynamic allocation and no floating point anywhere — Rule 5, ADR-0008.
  *
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include "lamp.h"
+#include "lamp_pwm.h"
 #include "link.h"
 #include "rnwf_at.h"
 #include "rnwf_at_cmds.h"
 #include "rnwf_uart.h"
 
-#include <zephyr/device.h>
-#include <zephyr/drivers/pwm.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
 
-static const struct pwm_dt_spec lamp_yellow = PWM_DT_SPEC_GET(DT_ALIAS(lamp_yellow));
+/* 10 ms: fast enough to drain the receive ring well inside its 256-byte capacity at 115200. */
+#define AT_POLL_MS 10
 
 static struct rnwf_at at_client;
 static struct link link_state;
-
-/*
- * 125 steps of 10 ms = 1250 ms per cycle = 0.8 Hz, the BUSY breathe rate from CONTEXT.md.
- *
- * Scheduled on absolute deadlines rather than k_msleep(). A relative sleep measures the gap
- * *between* iterations, so every microsecond spent rendering or talking to the module is added to
- * the period: measured 1297 ms against an intended 1250 ms before this changed (D70). Absolute
- * deadlines make the rate the clock's business rather than the workload's.
- */
-#define BREATHE_STEPS	125U
-#define BREATHE_STEP_MS	10
-#define LEVEL_MAX	255U
-
-/*
- * Triangle wave, 0 -> LEVEL_MAX -> 0 across one breathe cycle.
- */
-static uint32_t breathe_level(uint32_t step)
-{
-	const uint32_t peak = BREATHE_STEPS / 2U;
-	const uint32_t last = BREATHE_STEPS - 1U;
-
-	if (step < peak) {
-		return (step * LEVEL_MAX) / peak;
-	}
-
-	return ((last - step) * LEVEL_MAX) / (last - peak);
-}
-
-/*
- * Perceptual correction. The eye's response to luminance is roughly logarithmic, so a linear
- * duty ramp reads as "snap on, then stall" rather than a breath. Cubing the level tracks it
- * closely enough for a diffused lamp and costs a couple of 32-bit multiplies — no powf(), no
- * soft-float library pulled into a 64 KB part.
- *
- * Confirmed on hardware: perceived brightness is roughly the cube root of duty, so cubing here
- * cancels it and a linear ramp in `level` is *seen* as a linear ramp in brightness — an even fade
- * with no dwell at either end. Worth knowing when reading a scope: the duty cycle is heavily
- * skewed toward zero even though the light is not.
- *
- * Dividing the period first keeps every intermediate inside 32 bits.
- */
-static uint32_t gamma_pulse(uint32_t level, uint32_t period)
-{
-	const uint32_t duty = (level * level * level) / (LEVEL_MAX * LEVEL_MAX);
-
-	return (period / LEVEL_MAX) * duty;
-}
-
-/*
- * The fail-visible pattern (Rule 4, ADR-0007, D34): what the lamp does when the device cannot
- * confirm what it is showing. Deliberately ugly and unlike any real state — an irregular stutter
- * rather than a rhythm, so it can never be mistaken for BUSY breathing or a WAIT blink.
- *
- * Provisional. With three lamps this becomes the amber flicker proper; lamp.c owns it. Kept here
- * because a supervisor that only writes to a console it has no way to reach is not fail-visible at
- * all — the whole point is that the device looks wrong.
- */
-static uint32_t flicker_pulse(uint32_t step, uint32_t period)
-{
-	static const uint8_t pattern[] = { 200, 12, 90, 8, 255, 30, 60, 10 };
-	const uint32_t slot = (step / 6U) % (uint32_t)(sizeof(pattern) / sizeof(pattern[0]));
-
-	return (period / LEVEL_MAX) * pattern[slot];
-}
 
 static const struct rnwf_at_config module_cfg = {
 	/*
@@ -116,29 +49,107 @@ static const struct rnwf_at_config module_cfg = {
 
 static void on_message(void *user, const char *topic, const char *payload)
 {
+	enum wigwag_state state;
+
 	ARG_UNUSED(user);
 
-	/* The host liveness topic is link supervision's, not the lamps'. */
+	/* The host liveness topic belongs to link supervision, not to the lamps. */
 	if (link_note_message(&link_state, topic, payload, module_cfg.host_online_topic,
 			      (uint32_t)k_uptime_get())) {
 		printk("wigwag: host_online = %s\n", payload);
 		return;
 	}
 
-	/* lamp.c will map this onto the lamps; for now prove it arrives intact. */
-	printk("wigwag: %s = %s\n", topic, payload);
+	if (!wigwag_state_parse(payload, &state)) {
+		/*
+		 * Keep showing whatever we had. Inventing a state from an unparseable payload is the
+		 * one thing worse than showing a slightly old one, and link supervision is what
+		 * catches a host that has genuinely stopped making sense.
+		 */
+		printk("wigwag: unparseable state payload, ignored\n");
+		return;
+	}
+
+	printk("wigwag: state %s\n", wigwag_state_str(state));
+	lamp_pwm_set_state(state);
 }
 
 static void on_link(void *user, bool linked)
 {
 	ARG_UNUSED(user);
 
-	/*
-	 * The AT client's view is only one of the inputs to the link condition — see link.h. It is
-	 * link.c that decides whether the device may believe what it is showing.
-	 */
+	/* One of several inputs to the link condition — link.h explains why it is not the only one. */
 	link_note_at(&link_state, linked, (uint32_t)k_uptime_get());
 	printk("wigwag: at link %s\n", linked ? "up" : "down");
+}
+
+/*
+ * The AT service loop: drain the module UART, advance the AT state machine, re-evaluate the link
+ * condition, and report transitions. Never returns.
+ *
+ * This runs on the **main thread**, which is a deliberate choice rather than an accident. Zephyr's
+ * main thread is an ordinary thread — the kernel calls main() from its initialization thread at
+ * CONFIG_MAIN_THREAD_PRIORITY — so using it as a service loop is idiomatic, and a separate thread
+ * would cost roughly 600 bytes: ~7 % of this part's entire SRAM, for a name.
+ *
+ * It would also not fix the thing that looks like it should. main's measured peak is
+ * max(init depth, loop depth) because init finishes before the loop starts; splitting them
+ * duplicates the capacity rather than reducing the maximum. main is at 860 of 1024 B (D78) because
+ * of printk formatting and the AT script's vsnprintf, and the cure for that is narrower format
+ * strings, not another stack.
+ *
+ * Revisit when any of these becomes true:
+ *   - a second context needs the AT client concurrently. button.c will want to publish from an
+ *     interrupt; a flag consumed by this loop is enough, but a message queue feeding a dedicated
+ *     thread is the textbook shape if it grows past that;
+ *   - the watchdog needs independent proof that more than one thread is alive;
+ *   - main's stack stops having comfortable headroom once credentials lengthen its commands.
+ */
+static void at_service(bool at_ready)
+{
+	int64_t deadline = k_uptime_get();
+
+	while (true) {
+		static enum rnwf_at_state at_reported = RNWF_AT_ST_IDLE;
+		static enum link_condition link_reported = LINK_LINKED;
+		uint32_t now;
+
+		if (at_ready) {
+			now = (uint32_t)k_uptime_get();
+			rnwf_uart_poll(&at_client);
+			rnwf_at_tick(&at_client, now);
+
+			/*
+			 * Report transitions only. A device whose sole output is three lamps is
+			 * otherwise unobservable during bring-up: with no module attached this loops
+			 * reset -> timeout -> backoff in silence, indistinguishable from a crash.
+			 */
+			if (at_client.state != at_reported) {
+				static const char *const names[] = {
+					"IDLE", "RESETTING", "SCRIPT", "READY", "BACKOFF",
+				};
+
+				at_reported = at_client.state;
+				printk("wigwag: at %s (errors %u timeouts %u polls %u "
+				       "overruns %u)\n", names[at_reported], at_client.errors,
+				       at_client.timeouts, at_client.polls,
+				       rnwf_uart_overruns());
+			}
+		}
+
+		link_tick(&link_state, (uint32_t)k_uptime_get());
+		lamp_pwm_set_link(link_is_trusted(&link_state));
+
+		if (link_get(&link_state) != link_reported) {
+			link_reported = link_get(&link_state);
+			printk("wigwag: link %s (%s)\n",
+			       (link_reported == LINK_LINKED) ? "LINKED" : "UNLINKED",
+			       link_reason_str(link_state.reason));
+		}
+
+		deadline += AT_POLL_MS;
+		k_sleep(K_TIMEOUT_ABS_MS(deadline));
+	}
 }
 
 int main(void)
@@ -147,26 +158,21 @@ int main(void)
 		.on_message = on_message,
 		.on_link = on_link,
 	};
-	uint64_t cycles = 0U;
-	uint32_t step = 0U;
-	int64_t deadline;
 	bool at_ready;
-	int ret;
 
 	printk("wigwag: starting\n");
 
-	if (!pwm_is_ready_dt(&lamp_yellow)) {
-		printk("wigwag: FAIL, PWM device not ready\n");
+	/*
+	 * Rename the thread we are on, so a stack or thread report says "at" rather than "main".
+	 * Compiled out entirely when CONFIG_THREAD_NAME is off, which it is in the shipping build —
+	 * the name exists for the measurement overlay (prj_stacks.conf), where a report full of
+	 * thread-object addresses is nearly useless.
+	 */
+	(void)k_thread_name_set(k_current_get(), "at");
+
+	if (lamp_pwm_init() != 0) {
 		return -ENODEV;
 	}
-
-	ret = pwm_get_cycles_per_sec(lamp_yellow.dev, lamp_yellow.channel, &cycles);
-	printk("wigwag: lamp %s ch%u, %u ns period, %u cycles/s (ret %d)\n",
-	       lamp_yellow.dev->name, lamp_yellow.channel, lamp_yellow.period,
-	       (uint32_t)cycles, ret);
-	printk("wigwag: polarity flags 0x%x (%s)\n", lamp_yellow.flags,
-	       ((lamp_yellow.flags & PWM_POLARITY_INVERTED) != 0) ? "inverted, active-low lamp"
-								 : "normal, active-high lamp");
 
 	link_init(&link_state, LINK_HOST_GRACE_MS);
 
@@ -176,70 +182,8 @@ int main(void)
 		rnwf_at_start(&at_client, (uint32_t)k_uptime_get());
 	}
 
-	deadline = k_uptime_get();
-
-	while (true) {
-		static enum rnwf_at_state reported = RNWF_AT_ST_IDLE;
-		static enum link_condition link_reported = LINK_LINKED;
-		uint32_t now;
-
-		/*
-		 * Until lamp.c maps state onto lamps, the lamp shows one of two things: the BUSY
-		 * breathe when the link is trusted, or the fail-visible stutter when it is not.
-		 */
-		ret = pwm_set_pulse_dt(&lamp_yellow,
-				       link_is_trusted(&link_state)
-					       ? gamma_pulse(breathe_level(step),
-							     lamp_yellow.period)
-					       : flicker_pulse(step, lamp_yellow.period));
-		if (ret < 0) {
-			printk("wigwag: FAIL, pwm_set_pulse_dt returned %d\n", ret);
-			return ret;
-		}
-
-		if (at_ready) {
-			/*
-			 * Receive is interrupt-driven into a ring, so a 10 ms drain cadence is
-			 * ample for AT traffic. Note that a long command blocks this loop while it
-			 * transmits, so the lamp will stutter during a connect burst — which is
-			 * precisely why lamp rendering moves to its own thread in lamp.c.
-			 */
-			now = (uint32_t)k_uptime_get();
-			rnwf_uart_poll(&at_client);
-			rnwf_at_tick(&at_client, now);
-
-			/*
-			 * Report transitions only. A device whose sole output is a lamp is
-			 * otherwise unobservable during bring-up: with no module attached this
-			 * loops reset -> timeout -> backoff in complete silence, which is
-			 * indistinguishable from a crash.
-			 */
-			if (at_client.state != reported) {
-				static const char *const names[] = {
-					"IDLE", "RESETTING", "SCRIPT", "READY", "BACKOFF",
-				};
-
-				reported = at_client.state;
-				printk("wigwag: at %s (errors %u timeouts %u polls %u "
-				       "overruns %u)\n", names[reported], at_client.errors,
-				       at_client.timeouts, at_client.polls,
-				       rnwf_uart_overruns());
-			}
-		}
-
-		link_tick(&link_state, (uint32_t)k_uptime_get());
-
-		if (link_get(&link_state) != link_reported) {
-			link_reported = link_get(&link_state);
-			printk("wigwag: link %s (%s)\n",
-			       (link_reported == LINK_LINKED) ? "LINKED" : "UNLINKED",
-			       link_reason_str(link_state.reason));
-		}
-
-		step = (step + 1U) % BREATHE_STEPS;
-		deadline += BREATHE_STEP_MS;
-		k_sleep(K_TIMEOUT_ABS_MS(deadline));
-	}
+	/* Becomes the AT service loop and never returns. */
+	at_service(at_ready);
 
 	return 0;
 }

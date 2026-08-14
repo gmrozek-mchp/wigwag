@@ -1,0 +1,93 @@
+/*
+ * Lamp animation — pure logic, no Zephyr, no PWM.
+ *
+ * Turns (state, link condition, time) into three perceptual brightness levels. The Zephyr side
+ * (lamp_pwm.c) applies gamma correction and per-lamp polarity and pushes them at the hardware, the
+ * same split as rnwf_at.c against rnwf_uart.c — so every behaviour in CONTEXT.md's table can be
+ * tested on the host without a board.
+ *
+ * Levels here are *perceptual*: 0 is off, 255 is full, and equal steps look like equal steps.
+ * Gamma belongs to the renderer, not to the animation.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#ifndef LAMP_H
+#define LAMP_H
+
+#include <stdbool.h>
+#include <stdint.h>
+
+/** The four states, exactly as CONTEXT.md names them. There is no UNKNOWN — that is a link condition. */
+enum wigwag_state {
+	WIGWAG_IDLE = 0,
+	WIGWAG_BUSY,
+	WIGWAG_WAIT,
+	WIGWAG_ERROR,
+};
+
+enum lamp_id {
+	LAMP_GREEN = 0,
+	LAMP_YELLOW,
+	LAMP_RED,
+	LAMP_COUNT,
+};
+
+struct lamp_frame {
+	uint8_t level[LAMP_COUNT];
+};
+
+/*
+ * Behaviour constants, from CONTEXT.md's table. Named rather than inline so the numbers can be
+ * argued about in one place.
+ */
+/*
+ * "steady, dim" — present, not attention-seeking. 128 renders as 12.6 % duty through
+ * lamp_gamma_pulse(), chosen by eye on hardware after sweeping 48/64/80/96/128/160.
+ *
+ * Note the bench understates the product: the Curiosity Nano drives an LED through a series
+ * resistor at a few mA, while the PCB drives 10 mm diffused lamps from the 5 V rail through FETs at
+ * 20-60 mA (D26, ADR-0009). The same duty will be several times brighter there, so this is a
+ * candidate for revisiting once real lamps exist — and `wigwag/brightness` (CONTEXT.md) is the
+ * proper place for per-desk trimming rather than this constant.
+ */
+#define LAMP_IDLE_DIM		128
+#define LAMP_BUSY_PERIOD_MS	1250	/* breathing ~0.8 Hz */
+#define LAMP_WAIT_ESCALATE_MS	30000	/* steady, then slow blink after 30 s */
+#define LAMP_WAIT_BLINK_MS	2000	/* the slow blink, 0.5 Hz */
+#define LAMP_ERROR_PERIOD_MS	250	/* red/yellow fast alternate, 4 Hz */
+#define LAMP_FLICKER_STEP_MS	70	/* amber flicker: deliberately not a rhythm */
+
+/**
+ * Render one frame.
+ *
+ * @param state          the aggregate state last received from the host
+ * @param linked         the link condition; false overrides everything with the amber flicker
+ * @param now_ms         a monotonic millisecond clock, for animation phase
+ * @param state_since_ms when @p state was adopted, for the WAIT escalation
+ */
+struct lamp_frame lamp_render(enum wigwag_state state, bool linked, uint32_t now_ms,
+			      uint32_t state_since_ms);
+
+/**
+ * Extract the state from a `wigwag/state` payload.
+ *
+ * Deliberately not a JSON parser: it looks for the `"state"` key's value and matches one of four
+ * literals. Returns false if the payload does not clearly say one of them — and the caller must
+ * then keep whatever it had rather than guess, because inventing a state is how a lamp lies.
+ */
+bool wigwag_state_parse(const char *payload, enum wigwag_state *out);
+
+const char *wigwag_state_str(enum wigwag_state state);
+
+/**
+ * Perceptual level -> PWM pulse width, in the same units as @p period.
+ *
+ * The eye's response to luminance is roughly a cube root, so this cubes the level to cancel it: a
+ * linear ramp in level is *seen* as a linear ramp in brightness. Lives here, with the tested logic,
+ * rather than in the renderer — it is pure integer arithmetic, and the first version of it sat on
+ * the Zephyr side where no test could reach it and shipped a bug for exactly that reason.
+ */
+uint32_t lamp_gamma_pulse(uint8_t level, uint32_t period);
+
+#endif /* LAMP_H */
