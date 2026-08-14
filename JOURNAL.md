@@ -7,6 +7,87 @@ Entries record what was done, why, and — importantly — what was tried and re
 
 ---
 
+## 2026-08-14 — The RNWF02 AT wire protocol, verified from the specification
+
+**Done**
+- `firmware/src/rnwf_at_cmds.h` — the module's entire wire vocabulary in one file, every string,
+  parameter ID and length limit cited to the **AT Command Specification, Network Controller 3.1.0,
+  Revision 58a15dc2, August 19 2025**. Nothing inferred, nothing borrowed from a sibling part.
+
+**Why this took a detour**
+The plan said to read the AT command reference before writing `fake_rnwf02.py`, because a fake that
+mirrors invented syntax passes its own tests and proves nothing. That turned out to matter more
+than expected: **the MCP documentation tools cannot see the AT specification at all.** Every query
+for MQTT AT commands returns the **Harmony 3 C wrapper** — `SYS_RNWF_MQTT_SrvCtrl`,
+`SYS_RNWF_MQTT_CONFIG` — which documents *semantics* but contains no wire text. The RNWF02
+Application Developer's Guide §9 "AT Commands" is a stub that says to fetch a separate PDF from the
+product page.
+
+Two partial sources were genuinely useful and are worth remembering:
+- **RNWF02 Supplemental User Guide v3.0.0** carries a real transcript (`AT+WSTAC=1,"SSID"` / `OK` /
+  `+WSTALU:1,"AA:BB:CC:DD:EE:FF",1`), which established the framing before the spec was in hand.
+- **The RNWF11 guide** documents the full AT reference inline, including `+WSTAC`'s parameter IDs.
+  Tempting, and *not used*: assuming a sibling module's command set is a good way to encode a
+  plausible fiction. Recorded here as the trap it was.
+
+The specification PDF was supplied directly. `WebFetch` could not read it — the content is
+FlateDecode streams — but it saves the binary to disk, so `pdftotext -layout` on the saved file
+produced 10 531 lines of searchable text. Worth knowing as a general technique.
+
+**Verified — the four framing details that would each have caused a bug**
+1. **A command line is terminated by CR LF**, not CR alone.
+2. **AECs carry a *leading* CR**: `<CR>+AECNAME:INFO<CR><LF>`, present "to clearly identify the
+   start of the AEC". So the line assembler must treat a bare CR as a delimiter and tolerate empty
+   lines instead of treating one as a malformed response.
+3. **`ERROR` is not safe to match on.** The success/error text depends on the `ATV` verbosity level:
+   level 0 is `0`/`1`, level 2 is `OK`/`ERROR`, level 3 adds `ERROR:<STATUS_CODE>`, levels 4–5 add
+   prose. The default is unspecified, so the client sets **`ATV3`** first — machine-readable codes,
+   no vendor prose to parse.
+4. **A command can succeed and then fail.** "If a command requires longer to process, the success
+   response indicates the command was accepted. Command processing continues asynchronously."
+   Late failures arrive as `+CMDNAME:ERROR:<code>` — the spec's own example is `+SOCKBR:ERROR:4`.
+   So `OK` means *accepted*, never *done*, and the state machine must not treat it as completion.
+
+Also verified: **AECs are never sent during command execution**, but may arrive while the host is
+mid-transmit. That removes the need to handle an AEC interleaved inside a response, which is a real
+simplification for an 8 KB part.
+
+**Verified — the commands wigwag actually needs**
+`AT+RST`, `AT+GMR` (the D62 firmware check), `ATV3`; `AT+WSTAC=<ID>,<VAL>` with SSID=1,
+SEC_TYPE=2 (3 = WPA2-Personal, 5 = WPA3-Personal), CREDENTIALS=3, then `AT+WSTA=1`;
+`AT+MQTTC=<ID>,<VAL>` with BROKER_ADDR=1, BROKER_PORT=2, CLIENT_ID=3, USERNAME=4, PASSWORD=5,
+KEEP_ALIVE=6, TLS_CONF=7, PROTO_VER=8; `AT+MQTTCONN=<CLEAN>`;
+`AT+MQTTSUB=<TOPIC>,<MAX_QOS>`; `AT+MQTTPUB=<DUP>,<QOS>,<RETAIN>,<TOPIC>,<PAYLOAD>`.
+
+AECs: `+BOOT`, `+WSTALU`, `+WSTAAIP` (IP assigned — **this**, not link-up, is the cue to start
+MQTT), `+WSTALD`, `+WSTAERR`, `+MQTTCONNACK:<FLAGS>,<REASON>` (0 = success), and
+`+MQTTSUBRX:<DUP>,<QOS>,<RETAIN>,<TOPIC>,<PAYLOAD>` — which is how `wigwag/state` arrives.
+
+**Two findings that change the design rather than just informing it**
+- **`AT+MQTTLWT=<QOS>,<RETAIN>,<TOPIC>,<PAYLOAD>` exists.** So the *device* can register its own
+  MQTT Last Will, which is exactly what `wigwag/online` = `0` needs (CONTEXT.md). That was listed
+  as a topic with no implementation path; it is now a single command issued before `AT+MQTTCONN`.
+- **The spec's maximum field lengths size our static buffers**, replacing guesswork: SSID 32,
+  credentials 128, broker address 64, client ID 48, username 128, password 256. The longest command
+  we ever emit is therefore a password set at 273 bytes — a real number for Rule 5 instead of the
+  plan's assumed 256-byte round figure.
+
+**Open**
+- `+MQTTCONN` also exists as an AEC ("Connection state") distinct from `+MQTTCONNACK`. Its field
+  layout has not been read yet; the client will match `+MQTTCONNACK` and log anything else.
+- Numeric mode exists (`MM:NN`, MQTT is module ID 8) and would shrink parsing further. Not used —
+  verbose text is debuggable from a terminal, which is half of why ADR-0002 chose this module.
+- The specification is a vendor PDF and is **not** committed to the repo; `rnwf_at_cmds.h` cites
+  its revision so the source of every value is traceable without redistributing it.
+
+**Next**
+Write the AT core against this vocabulary: bounded line assembly tolerating the leading-CR AEC
+framing, a request/response engine where `OK` means *accepted*, AEC dispatch, and the connect state
+machine `reset → ATV3 → WSTAC → WSTA → +WSTAAIP → MQTTC → MQTTLWT → MQTTCONN → +MQTTCONNACK →
+MQTTSUB` with backoff. Zephyr-free, so it unit-tests under plain clang on macOS (D66).
+
+---
+
 ## 2026-08-14 — Phase 2 opened: Zephyr workspace, and **D49 passes on hardware**
 
 **Done**
