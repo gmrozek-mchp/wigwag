@@ -7,6 +7,59 @@ Entries record what was done, why, and — importantly — what was tried and re
 
 ---
 
+## 2026-08-14 — End-to-end: the real AT client against a real broker, no hardware
+
+**Done**
+- `firmware/sim/fake_rnwf02.py` — AT server plus `paho-mqtt` bridge to a real broker. Serves either
+  a PTY (host-only) or a serial port (for the cnano later). Framing is faithful to the spec,
+  including the **leading CR on every AEC** and the rule that AECs queue behind a command in flight
+  rather than interleaving with it.
+- `firmware/sim/at_host.c` — POSIX runner that drives the **real `rnwf_at.c`** over the PTY, with
+  `make -C firmware/tests sim`. This is the substitute for `native_sim` that ADR-0015 promised, and
+  it works on macOS.
+- Failure injection the real module will never do on command: `--no-connack`, `--connack-reason`,
+  `--fail <PREFIX>`, `--drop-link-after`, `--slow`.
+
+**Verified end to end, against a real `mosquitto`**
+- Full bring-up: `RESETTING → SCRIPT → READY`, LWT registered, `wigwag/state` subscribed at QoS 1,
+  and the birth message `wigwag/online = 1` published retained.
+- **The JSON payload survives the round trip intact** —
+  `{"state":"WAIT","reason":"permission_prompt","sessions":2}` arrives with every comma and quote in
+  place. That was the specific risk in taking the payload as the tail after the fourth comma.
+- **ADR-0003's load-bearing claim, now verified from the device side.** Published a retained
+  `ERROR` state with *no device connected*, then started the client: it received the retained
+  message immediately on subscribing, with no host involvement. This is the whole reason the
+  transport is retained MQTT.
+- **ADR-0007, as a sequence rather than an intention.** Injected a Wi-Fi drop: `+WSTALD` →
+  `on_link(false)` → `BACKOFF` → reset → full script → `LINKED` again, and the retained state
+  re-delivered on resubscribe. Three complete loss-and-recovery cycles in twelve seconds.
+- **A withheld `+MQTTCONNACK` never produces a false `LINKED`.** The module answered `AT+MQTTCONN`
+  with `OK` and then said nothing; the client timed out, backed off and retried, and `on_link(true)`
+  was never called. That is exactly the "OK means accepted, not done" rule earning its keep — a
+  client that advanced on `OK` would have lit a confident lamp with no broker behind it.
+
+**A diagnostic that lied, and got fixed**
+A healthy run reported `dropped=3`, which reads like packet loss. It was three `+WSTALU` events —
+well-formed link-up notifications carrying a BSSID and channel we have no use for. Conflating "an
+event we don't model" with "a malformed or oversized line" would have sent a future debugger chasing
+nothing, so they are now separate counters: `aecs_ignored` and `lines_dropped`. Four bytes of RAM,
+justified under Rule 5 by the fact that on this device the only other output is a lamp.
+
+**Measured after the change** — 2 040 bytes of flash unchanged, `sizeof(struct rnwf_at)` now
+**624 bytes** (0x270, up 4 for the counter). 82 host checks still pass.
+
+**Open**
+- The fake encodes *our model* of the module. It proves framing, sequencing, timeout and backoff,
+  and it cannot settle what the spec leaves unsaid — the quote-escaping question stands until real
+  hardware answers it.
+- `paho-mqtt` 2.x needs `CallbackAPIVersion`; the fake now guards for it exactly as
+  `host/wigwagd/publisher.py` already did. Worth noting that the convention was already in the repo
+  — checking first was cheaper than inventing a second one.
+- Still to do: the Zephyr UART adapter and SERCOM0 devicetree, which is the same pattern D49
+  established for TCC0.
+
+---
+
 ## 2026-08-14 — The AT client core, with host tests that need neither Zephyr nor hardware
 
 **Done**

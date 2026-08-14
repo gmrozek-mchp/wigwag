@@ -112,8 +112,16 @@ struct rnwf_at {
 	size_t rx_len;
 	bool rx_overflow;
 
-	/* Diagnostics — cheap counters, useful when the only output is a lamp. */
-	uint32_t lines_dropped;
+	/*
+	 * Diagnostics — cheap counters, useful when the only output is a lamp.
+	 *
+	 * lines_dropped and aecs_ignored are deliberately separate: a recognised event we simply
+	 * do not model (+WSTALU carries BSSID and channel, which we never use) is normal, while a
+	 * malformed or oversized line is not. Conflating them made a healthy run report
+	 * "dropped=3" and look broken.
+	 */
+	uint32_t lines_dropped;	/* malformed, oversized, or unparseable */
+	uint32_t aecs_ignored;	/* well-formed AEC we have no use for */
 	uint32_t errors;
 	uint32_t timeouts;
 	uint32_t messages;

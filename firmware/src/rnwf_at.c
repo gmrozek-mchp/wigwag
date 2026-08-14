@@ -500,8 +500,8 @@ static void handle_line(struct rnwf_at *at, const char *line)
 		return;
 	}
 
-	/* Anything else: an AEC we do not model. Counted, ignored. */
-	at->lines_dropped++;
+	/* Well-formed, and of no interest to us: +WSTALU, +MQTTSUBLST, read responses, and so on. */
+	at->aecs_ignored++;
 }
 
 /* --------------------------------------------------------- line  assembler */
