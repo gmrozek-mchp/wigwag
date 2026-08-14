@@ -10,6 +10,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include "button.h"
+#include "button_gpio.h"
 #include "lamp.h"
 #include "lamp_pwm.h"
 #include "link.h"
@@ -20,11 +22,14 @@
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
 
+#include <string.h>
+
 /* 10 ms: fast enough to drain the receive ring well inside its 256-byte capacity at 115200. */
 #define AT_POLL_MS 10
 
 static struct rnwf_at at_client;
 static struct link link_state;
+static struct button button_state;
 
 static const struct rnwf_at_config module_cfg = {
 	/*
@@ -46,6 +51,69 @@ static const struct rnwf_at_config module_cfg = {
 	.online_topic = "wigwag/online",
 	.host_online_topic = "wigwag/host_online",
 };
+
+/*
+ * Build {"event":"press","ms":<n>} without printf.
+ *
+ * Hand-rolled because main's stack is the tight one at 860 of 1024 B (D78), already carrying printk
+ * formatting and the AT script's vsnprintf; adding another varargs frame to the publish path is the
+ * wrong direction. Fixed prefix, decimal digits, fixed suffix — no varargs, no float, bounded.
+ */
+static size_t press_payload(char *out, size_t cap, uint32_t ms)
+{
+	static const char pre[] = "{\"event\":\"press\",\"ms\":";
+	static const char post[] = "}";
+	char digits[11];
+	size_t n = 0;
+	size_t d = 0;
+
+	if (cap < sizeof(pre) + sizeof(digits) + sizeof(post)) {
+		return 0;
+	}
+
+	memcpy(out, pre, sizeof(pre) - 1U);
+	n = sizeof(pre) - 1U;
+
+	if (ms == 0U) {
+		digits[d++] = '0';
+	}
+	while (ms > 0U) {
+		digits[d++] = (char)('0' + (ms % 10U));
+		ms /= 10U;
+	}
+	while (d > 0U) {
+		out[n++] = digits[--d];	/* reverse into place */
+	}
+
+	out[n++] = post[0];
+	out[n] = '\0';
+
+	return n;
+}
+
+static void publish_press(uint32_t ms)
+{
+	char payload[48];
+
+	if (press_payload(payload, sizeof(payload), ms) == 0U) {
+		return;
+	}
+
+	/*
+	 * Not retained: a button press is an event, not a state. A retained press would be replayed
+	 * to every future subscriber, including this device after a reboot (CONTEXT.md).
+	 */
+	if (rnwf_at_publish(&at_client, "wigwag/button", payload, false) == 0) {
+		printk("wigwag: published press %u ms\n", ms);
+	} else {
+		/*
+		 * Dropped because the link is not up. Correct: D35 says the host decides what a press
+		 * means, and a press queued now and delivered minutes later would be a lie about when
+		 * it happened.
+		 */
+		printk("wigwag: press %u ms dropped, link down\n", ms);
+	}
+}
 
 static void on_message(void *user, const char *topic, const char *payload)
 {
@@ -137,6 +205,24 @@ static void at_service(bool at_ready)
 			}
 		}
 
+		{
+			/*
+			 * Sampled here rather than on an interrupt (D86). At 10 ms this is well inside
+			 * the debounce window, so no press can be missed and no edge needs latching.
+			 */
+			struct button_result ev =
+				button_sample(&button_state, button_gpio_pressed(),
+					      (uint32_t)k_uptime_get());
+
+			if (ev.event == BUTTON_EVENT_PRESS) {
+				publish_press(ev.ms);
+			} else if (ev.event == BUTTON_EVENT_LONG) {
+				/* D58 will enter provisioning mode here. */
+				printk("wigwag: long press at %u ms (provisioning, not yet built)\n",
+				       ev.ms);
+			}
+		}
+
 		link_tick(&link_state, (uint32_t)k_uptime_get());
 		lamp_pwm_set_link(link_is_trusted(&link_state));
 
@@ -175,6 +261,12 @@ int main(void)
 	}
 
 	link_init(&link_state, LINK_HOST_GRACE_MS);
+
+	button_init(&button_state);
+	if (button_gpio_init() != 0) {
+		/* A missing button is not fatal — the lamps are the point of the device. */
+		printk("wigwag: continuing without the button\n");
+	}
 
 	at_ready = (rnwf_uart_init(&at_client, &module_cfg, &cb) == 0);
 	if (at_ready) {

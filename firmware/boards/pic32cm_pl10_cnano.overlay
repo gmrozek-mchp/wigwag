@@ -82,7 +82,29 @@
 		};
 	};
 
+	/*
+	 * SW0, the board's user switch. Active low — pressing it connects the pin to GND — and there
+	 * is no external pull-up, so the internal one is required (user guide §4.2).
+	 *
+	 * Described with gpio-keys for the standard shape, but read by polling rather than through
+	 * the input subsystem: PL10's devicetree has no EIC node, so a pin interrupt would mean
+	 * enabling an interrupt controller to save nothing on a button (D86). GPIO_ACTIVE_LOW means
+	 * gpio_pin_get_dt() returns 1 when pressed, so no inversion in the code.
+	 *
+	 * PB03 is shared with the on-board debugger (DBG2), which tri-states it when inactive.
+	 */
+	buttons {
+		compatible = "gpio-keys";
+
+		button0: button_0 {
+			gpios = <&portb 3 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			label = "SW0";
+			zephyr,code = <INPUT_KEY_0>;
+		};
+	};
+
 	aliases {
+		sw0 = &button0;
 		lamp-green = &lamp_green;
 		lamp-yellow = &lamp_yellow;
 		lamp-red = &lamp_red;

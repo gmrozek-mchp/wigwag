@@ -7,6 +7,86 @@ Entries record what was done, why, and — importantly — what was tried and re
 
 ---
 
+## 2026-08-14 — button.c: presses published, and the device finally talks back
+
+**Done**
+- `firmware/src/button.{h,c}` — pure debounce and press classification, no Zephyr. 20 ms settling,
+  duration measured between debounced edges, and a long-hold threshold at 3 s.
+- `firmware/src/button_gpio.{h,c}` — the polled GPIO binding, which is a pin read and nothing else.
+- `firmware/tests/test_button.c` — 23 checks. Four suites now total **1430, 0 failures**.
+- SW0 in the overlay as `gpio-keys` on PB03, `GPIO_PULL_UP | GPIO_ACTIVE_LOW`, alias `sw0`.
+- `main.c` samples it in the existing 10 ms loop and publishes `wigwag/button`.
+
+**Polled, not interrupt-driven — a deliberate deviation from plan item 17 (D86)**
+Plan item 17 says "GPIO IRQ + debounce". The GPIO driver does support interrupts, but only via
+`CONFIG_INTC_MCHP_EIC_G1`, and **PL10's devicetree has no `eic` node** — the driver
+(`intc_mchp_eic_g1.c`) and binding exist, and the JH, SG and SAM families instantiate it, but this
+family does not. That is the same three-layer gap as TCC0: silicon has it, driver exists, board/SoC
+layer missing.
+
+Polling won on the merits rather than to dodge the work:
+- a press lasts ~100 ms and sampling is every 10 ms, so nothing can be missed;
+- debounce needs tens of milliseconds of settling anyway, so **polling *is* the debounce** where an
+  interrupt would only start a timer;
+- wigwag is USB-powered and never sleeps (D24), so wake-from-sleep — the real reason to want a pin
+  interrupt — buys nothing;
+- no EIC node, no interrupt controller, no ISR-safe handoff. Rule 5.
+
+The EIC gap remains available as a separate upstream contribution if anything ever needs it.
+
+**Verified on hardware, first try** — 14 presses over 30 s, all published, no duplicates:
+```
+wigwag: published press 350 ms
+wigwag: long press at 3000 ms (provisioning, not yet built)
+wigwag: published press 4520 ms
+...
+wigwag/button {"event":"press","ms":350}
+wigwag/button {"event":"press","ms":4520}
+```
+Durations 190–530 ms for taps and 4520/6670 ms for two deliberate holds. The long-hold fires at
+exactly 3000 ms **while still held** and the release still publishes its true duration — the D35/D58
+split intact: the host gets the raw fact, the device keeps its local gesture.
+
+**This is the first time the device→host direction has worked.** Everything before was host→device.
+The chain is SW0 → debounce → `AT+MQTTPUB` → SERCOM0 → fake module → mosquitto → subscriber.
+
+Two things confirmed rather than assumed. **PB03 is shared with the on-board debugger** (DBG2) and
+caused no spurious presses in 30 s with the debugger attached — it had been flagged as the first
+suspect if presses looked erratic. And a deliberate tap bottoms out around **200 ms**, so the 20 ms
+debounce has ample margin; that 200 ms floor is the number that would matter if double-tap ever
+became a gesture.
+
+**Details worth keeping**
+- The payload is built without `printf`. `main`'s stack is the tight one at 860 of 1024 B (D78) and
+  already carries `printk` plus the AT script's `vsnprintf`; adding another varargs frame to the
+  publish path is the wrong direction, so `press_payload()` copies a fixed prefix, reverses decimal
+  digits into place, and appends the suffix.
+- Presses are published **not retained**. A press is an event, not a state — a retained one would be
+  replayed to every future subscriber, including this device after a reboot.
+- A press that cannot be sent is **dropped with a log line, not queued**. D35 says the host decides
+  what a press means, and one delivered minutes late would be a lie about when it happened.
+- The first sample after boot is adopted silently, so a device that starts with the button held —
+  or reads a debugger-driven level on that shared pin — cannot manufacture a press it never saw begin.
+- `CONFIG_GPIO=y` was needed and was missing: the link failed with `undefined reference to
+  __device_dts_ord_5`, the `portb` device, because the lamps are PWM and nothing had needed GPIO
+  until now. Costs 40 bytes of RAM.
+
+**A test helper with the exact bug its test was hunting**
+`test_clock_wrap_is_survivable()` failed, and the fault was in the helper, not the code under test:
+`hold()` computed `end = now + ms` and looped `while (now < end)`, which is not wrap-safe — at
+`0xFFFFFFFA + 100` the end wraps below the start and the loop body never runs. `button.c` itself uses
+wrap-safe subtraction throughout and was correct. Helper now counts iterations. Pleasing in a small
+way: writing the wrap test caught a wrap bug, just not the one it was aimed at.
+
+**Measured** — flash 20 940 B (34.1 %), RAM **4 480 B of 8 KB (54.7 %)**. The button costs 40 bytes.
+
+**Open**
+- Provisioning mode (D58) is where `BUTTON_EVENT_LONG` will go; today it only logs.
+- The watchdog is the last of plan item 17, and it pairs with link supervision: a wedged AT loop is
+  exactly what supervision cannot catch by itself, since it is the thing doing the supervising.
+
+---
+
 ## 2026-08-14 — "PA24 isn't working": one pin conflict, one gamma bug, and a test that couldn't reach it
 
 Reported from the bench: flickering on PB02 and PA25, nothing at all on PA24. Two independent

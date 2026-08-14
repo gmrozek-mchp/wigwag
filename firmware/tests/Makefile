@@ -15,18 +15,25 @@ BUILD := build
 BIN   := $(BUILD)/test_rnwf_at
 LINK  := $(BUILD)/test_link
 LAMP  := $(BUILD)/test_lamp
+BTN   := $(BUILD)/test_button
 SIM   := $(BUILD)/at_host
 SRCS  := test_rnwf_at.c ../src/rnwf_at.c
 DEPS  := ../src/rnwf_at.h ../src/rnwf_at_cmds.h
 
-.PHONY: all link lamp sim clean
-all: $(BIN) $(LINK) $(LAMP)
+.PHONY: all link lamp button sim clean
+all: $(BIN) $(LINK) $(LAMP) $(BTN)
 	./$(BIN)
 	./$(LINK)
 	./$(LAMP)
+	./$(BTN)
 
 $(BIN): $(SRCS) $(DEPS) | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $(SRCS) $(LDFLAGS)
+
+button: $(BTN)
+	./$(BTN)
+$(BTN): test_button.c ../src/button.c ../src/button.h | $(BUILD)
+	$(CC) $(CFLAGS) -o $@ test_button.c ../src/button.c $(LDFLAGS)
 
 lamp: $(LAMP)
 	./$(LAMP)

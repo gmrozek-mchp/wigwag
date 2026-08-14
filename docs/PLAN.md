@@ -212,6 +212,8 @@ FET selection: logic-level N-channel, Vgs(th) low enough to fully enhance at 3.3
 | **D82** | **XOSC32K disabled on the cnano** — it owns PA24/PA25 (XTAL32K1/2) and overrides their GPIO/peripheral function per datasheet §13.4.2.2, silently killing two lamps. The board's crystal is also disconnected by default, so the driver was waiting on an oscillator that could never start | settled |
 | **D83** | **Gamma lives in `lamp.c`, not the renderer** — it is pure arithmetic, and on the Zephyr side it shipped a bug where every level below 41 rendered as off. Tests now cover monotonicity, endpoints and dead zones | settled |
 | **D84** | **Power-on lamp test**: each lamp to full for 400 ms, then all three. A dim steady state proves nothing; full brightness would have exposed both of the above immediately | settled |
+| **D86** | **The button is polled at 10 ms, not interrupt-driven** — PL10's devicetree has no `eic` node, and a press lasts ~100 ms while debounce needs tens of ms anyway, so polling *is* the debounce. The device never sleeps (D24), so a pin interrupt buys nothing | settled |
+| **D87** | **Presses are published unretained and dropped if the link is down** — a press is an event, not a state, and one delivered late would misreport when it happened (D35) | settled |
 | **D85** | **`LAMP_IDLE_DIM = 128`** (12.6 % duty), chosen by eye from a hardware sweep. Revisit with real 10 mm lamps at 20–60 mA; `wigwag/brightness` is the place for per-desk trimming | settled |
 | **D81** | **The AT service loop runs on the main thread**, renamed `at` for reports. A dedicated thread costs ~600 B (~7 % of SRAM) and would *not* reduce peak depth, since main's peak is `max(init, loop)` rather than their sum. Revisit when a second context needs the AT client, when the WDT needs multi-thread liveness, or if credentials lengthen its commands | settled |
 
@@ -382,9 +384,10 @@ Remaining Phase 0 loose end: nothing is committed to git yet (D16).
     SERCOM0 through a 3.3 V USB-UART adapter, tested against the real broker. **Not `native_sim`:**
     Zephyr's POSIX architecture does not work on macOS (D66, ADR-0015).
 16. `lamp.c`: 3 PWM channels, ~100 Hz render, gamma-corrected steady/breathe/blink/flicker.
-17. `button.c` (GPIO IRQ + debounce) and `link.c` (supervision → amber flicker, WDT).
-    `link.c` done and verified on hardware across all three failure domains (D75); the WDT and the
-    real three-lamp amber flicker are still outstanding.
+17. `button.c` (debounce + publish) and `link.c` (supervision → amber flicker, WDT).
+    `link.c` done and verified across all three failure domains (D75). `button.c` done and verified
+    on hardware — 14 presses, no duplicates, long-hold at 3 s — but **polled rather than
+    interrupt-driven** (D86), since PL10 has no `eic` node. The WDT is the remaining piece.
 18. Hardware bring-up: `EV10P22A` + `EV72E72A`, five jumpers (TX, RX, MCLR, 3V3, GND).
 19. **Record `ram_report`/`rom_report`** in the journal; confirm the 8 KB budget holds (D48).
 
