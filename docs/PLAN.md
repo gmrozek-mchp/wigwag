@@ -203,6 +203,9 @@ FET selection: logic-level N-channel, Vgs(th) low enough to fully enhance at 3.3
 | **D72** | **The cnano's LED0 is active low**, so the dev-board overlay uses `PWM_POLARITY_INVERTED`. Mainline's board dts says `GPIO_ACTIVE_HIGH` — an upstream bug. **The PCB is active high** (low-side FETs, D26), so `lamp.c` must take polarity from devicetree, never inherit the board's | settled |
 | **D73** | **Local patch to the pinned tree**: mainline's `microchip,{tc,tcc}-g1-pwm.yaml` name the third `pwm-cell` `polarity`, so `PWM_DT_SPEC_GET()` silently discards polarity. Fixed in `firmware/patches/`, to be upstreamed (ADR-0006 rung b) | settled |
 | **D74** | **The firmware prints its resolved PWM flags at boot**, because a devicetree value that is silently ignored is otherwise invisible | settled |
+| **D75** | **Link supervision needs positive liveness in both failure domains**, not just absence of bad news. Demonstrated on hardware: with its module killed, the device sat in `READY` reporting `LINKED` indefinitely. `link.c` polls the module with a bare `AT` *and* subscribes to `wigwag/host_online` — the module poll cannot see a dead broker, and the topic cannot see a dead module | settled |
+| **D76** | **Module UART = SERCOM0 on PA04 (PAD0/TX) / PA05 (PAD1/RX)**, mux C, reached via a `wigwag,module-uart` chosen node. Everything else is taken by the debugger, the crystal footprint, the touch button, or the MVIO domain | settled |
+| **D77** | **Interrupt-driven UART receive into a 256-byte static ring**, drained every 10 ms; overruns counted and reported. Polled receive drops bytes at 115200 with no deep FIFO | settled |
 
 ---
 

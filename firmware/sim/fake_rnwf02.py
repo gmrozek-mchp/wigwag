@@ -109,6 +109,15 @@ class Broker:
         except ImportError:
             sys.exit("fake_rnwf02: needs paho-mqtt, or pass --no-broker")
 
+        # Tear down any previous session first. A real module has exactly one MQTT connection, and
+        # leaking one per AT+MQTTCONN gave two clients sharing a client_id, which a broker resolves
+        # by evicting whichever connected first - so they ping-pong and delivery becomes flaky.
+        # Observed as "the device connects fine but later publishes never arrive".
+        if self.client is not None:
+            self.close()
+            self.client = None
+            self.subscriptions.clear()
+
         client_id = cfg.get(3, "fake-rnwf02")
 
         # CallbackAPIVersion is required by paho 2.x; guard so paho 1.x also works. Same shape as

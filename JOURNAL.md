@@ -7,6 +7,152 @@ Entries record what was done, why, and — importantly — what was tried and re
 
 ---
 
+## 2026-08-14 — SERCOM0 and the Zephyr transport: the AT client now runs on silicon
+
+**Done**
+- SERCOM0 enabled in `firmware/boards/pic32cm_pl10_cnano.overlay` — pinctrl group, `gclkperiph`
+  channel and a `microchip,sercom-g1-uart` node — plus a `wigwag,module-uart` chosen node so the AT
+  client never names a board-specific label.
+- `firmware/src/rnwf_uart.{h,c}` — the Zephyr half of `struct rnwf_at_io`: interrupt-driven receive
+  into a 256-byte static ring, drained in thread context; polled transmit.
+- `rnwf_at.c` and `rnwf_uart.c` are now in `firmware/CMakeLists.txt`, and `main.c` runs the client
+  alongside the lamp. The connect script executes on the real part.
+
+**Pins, settled by elimination**
+**PA04 = SERCOM0 PAD0 (TX), PA05 = PAD1 (RX)**, peripheral function C. Everything else was taken or
+unwise: the debugger holds PB00/PB01 (CDC console), PA20 (SWDIO), PA31 (SWCLK), PB03 (SW0) and PA30
+(RESET); PA24/PA25 are the 32.768 kHz crystal footprint; PB08/PB09 the touch button; and **PA08–PA15
+are MVIO**, powered from VDDIO2 — a needless dependency for a UART. `txpo = 0`, `rxpo = 1`, matching
+the board's own sercom1 console.
+
+**Verified on hardware**
+```
+wigwag: at RESETTING (errors 0 timeouts 1 overruns 0)
+wigwag: at BACKOFF   (errors 0 timeouts 2 overruns 0)
+wigwag: at RESETTING (errors 0 timeouts 2 overruns 0)
+```
+With no module attached this is exactly right: `AT+RST`, 5 s for `+BOOT`, timeout, backoff, retry.
+It proves on real silicon that SERCOM0 initialises, the ISR is wired, and the timeout/backoff path
+works — `errors 0, overruns 0` throughout.
+
+**Measured** — flash 17 816 B (29.0 %), **RAM 4 800 B of 8 KB (58.6 %)**. The 920 B the AT client
+added is attributed exactly: `at_client` 624 B, `rnwf_uart.c` 268 B (256-byte ring plus indices),
+44 B of UART driver state for both SERCOM instances. The whole application is ~900 B against
+3 766 B of kernel, which remains the entire story of this budget.
+
+**Fixed while here: D70, the breathe drift**
+`main.c` now schedules on absolute deadlines (`k_sleep(K_TIMEOUT_ABS_MS(deadline))`) instead of
+`k_msleep()`. A relative sleep times the gap *between* iterations, so every microsecond of render
+and AT work was added to the period — the measured 1297 ms against an intended 1250 ms. Absolute
+deadlines make the rate the clock's business rather than the workload's.
+
+**Tried and rejected**
+- **Polled receive.** Would have avoided `CONFIG_UART_INTERRUPT_DRIVEN` and the ring entirely. At
+  115200 a byte arrives every 87 µs and the SERCOM has no deep FIFO, so a loop that also renders
+  lamps would lose characters mid-line. Interrupt-driven receive with a counted-overrun ring
+  instead; `overruns` is reported on the console precisely so "too slow" is visible rather than
+  silently corrupting lines.
+- **Enabling `porta`.** The instinct, since the UART pins are on port A. Unnecessary: the pinctrl
+  driver builds its port address table with `MCHP_PORT_ADDR_OR_NONE`, which tests
+  `DT_NODE_EXISTS` rather than status, so muxing works while the GPIO node stays disabled — and we
+  avoid instantiating a device we never use. Worth knowing that the same macro means a *missing*
+  port node would silently shift the table's indices.
+- **A silent device.** The first integrated build printed nothing at all for 16 s and looked dead. It
+  was correct — I had dropped the per-cycle heartbeat, and a client with no module retries in
+  silence. Replaced with state-transition reporting, which is the right granularity: rare, and it
+  distinguishes "backing off" from "crashed". A device whose only output is a lamp needs this.
+
+**A wrong assumption, caught by the compiler**
+`uart_irq_update()` returns **void** in this Zephyr version; I wrote it as a condition
+(`if (!uart_irq_update(dev))`) from memory. `-Werror` turned it into "invalid use of void
+expression" immediately, which is the argument for building the transport against the real headers
+early rather than writing it blind.
+
+**Then a USB-UART adapter arrived, and the whole path ran on silicon**
+
+A passive listen settled the pin question in one shot — read the adapter with nothing else running:
+
+```
+bytes received: 8
+repr: b'AT+RST\r\n'
+```
+
+Three things at once: bytes really do leave PA04, the adapter's RX was on the right pin, and **the
+CR LF command termination taken from the specification is correct on the wire.**
+
+Then the full chain, with `fake_rnwf02.py --port /dev/cu.usbserial-… --broker localhost`:
+
+```
+wigwag: module UART up, connecting to "wigwag-test"
+wigwag: at RESETTING ... at SCRIPT ... link LINKED ... at READY (errors 0 timeouts 0 overruns 0)
+wigwag: wigwag/state = {"state":"IDLE","reason":"start","sessions":0}
+wigwag: wigwag/state = {"state":"BUSY","reason":"live","sessions":3}
+wigwag: wigwag/state = {"state":"WAIT","reason":"live","sessions":3}
+wigwag: wigwag/state = {"state":"ERROR","reason":"live","sessions":3}
+```
+
+- The entire connect script executes on the real part over real SERCOM0: `ATV3`, `+WSTAC` ×3,
+  `AT+WSTA=1`, `+WSTAAIP`, `+MQTTC` ×4, `AT+MQTTLWT`, `AT+MQTTCONN`, `+MQTTCONNACK`, `AT+MQTTSUB`.
+- **A retained state published before the device existed arrives the moment it subscribes** —
+  ADR-0003's load-bearing claim, now proven on hardware rather than in a host loop.
+- Live updates arrive intact, JSON commas and quotes and all.
+- `errors 0 timeouts 0 overruns 0` throughout, so the 256-byte ring and the 10 ms drain cadence are
+  comfortable at 115200.
+
+**The important finding: the device does not notice a silent death**
+
+With the device in `READY`, its module process was killed and a new state published. For fourteen
+seconds the console printed **nothing** — no state change, no link report. The device sat in
+`READY`, reporting `LINKED`, holding a stale `ERROR` on its lamp, with nothing on the other end of
+the wire.
+
+That is precisely the confidently-wrong display ADR-0007 exists to forbid, and Rule 4 with it. The
+cause is structural rather than a bug: **the AT client learns of link loss only from asynchronous
+event codes** — `+WSTALD`, `+WSTAERR`, a failed `+MQTTCONNACK`. Absence of bad news is treated as
+good news, so a module that crashes, a pulled UART wire, or a broker that vanishes without the
+module noticing all leave the client believing it is linked indefinitely.
+
+D34 already requires "> 10 s without broker → amber flicker", so the requirement was written down;
+what is missing is any *positive* liveness evidence. Recorded as **D75**, and it is now the first
+job of `link.c` rather than a theoretical concern. Two complementary signals, both cheap:
+
+- **Poll the module.** A bare `AT` every few seconds, requiring `OK` within a timeout. Catches a
+  dead module, a dead UART, and a wedged AT interface — but says nothing about the broker.
+- **Watch `wigwag/host_online`.** `CONTEXT.md` already defines it as the daemon's retained liveness
+  marker with `0` as its Last Will. Subscribing to it catches a dead host or broker, which the
+  module poll cannot see.
+
+Neither alone is sufficient, which is the point worth remembering: the two failure domains are
+independent, so liveness needs a signal in each.
+
+**Tried and rejected: reconnecting the fake without tearing down the old session**
+
+A confusing symptom cost time and is worth recording, because it looks exactly like a firmware bug.
+After the device connected twice — once before a reset, once after — later publishes stopped
+arriving, while the broker held them correctly and the device sat happily in `READY`.
+
+`Broker.connect()` in the fake built a **new paho client per `AT+MQTTCONN`** without closing the
+previous one. Both used the same MQTT `client_id`, and a broker resolves that by evicting whichever
+connected first; paho's `loop_start()` then reconnects it, which evicts the second, and delivery
+turns flaky. A real module has exactly one MQTT session. Fixed by tearing down the old client first.
+
+The lesson is about test infrastructure: the fake produced a failure mode the real module cannot
+have, and I nearly went looking for it in `rnwf_at.c`. Worth checking the fake's own assumptions
+before suspecting the code under test.
+- Credentials in `main.c` are placeholders; Kconfig from a gitignored `credentials.conf` is still to
+  come (D56, D37).
+- The lamp does not yet respond to the received state — that is `lamp.c`, and it is also where the
+  renderer gets its own thread, since a long AT command currently blocks the breathe for up to
+  24 ms.
+- **The device never publishes.** `at_host.c` sends a retained `wigwag/online = 1` birth message;
+  `main.c` does not, so the online topic is only ever written by the Last Will. Harmless today,
+  wrong later — `1` on connect is half of what makes the will meaningful.
+- Nothing has verified the Last Will actually fires from the device's own session. The fake registers
+  it with paho (`will_set`), and killing the fake should publish `wigwag/online = 0`; that was not
+  checked while the fake's session handling was still suspect.
+
+---
+
 ## 2026-08-14 — The lamp was inverted, and two upstream bugs were hiding behind each other
 
 Chasing SERCOM0 pin assignments in the Curiosity Nano user guide turned up something that

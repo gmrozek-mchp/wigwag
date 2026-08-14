@@ -78,6 +78,14 @@
 	aliases {
 		lamp-yellow = &lamp_yellow;
 	};
+
+	/*
+	 * Which UART the RNWF02 lives on. A chosen node rather than an alias because it names a
+	 * role in the system, and keeps the AT client free of board-specific labels.
+	 */
+	chosen {
+		wigwag,module-uart = &sercom0;
+	};
 };
 
 &pinctrl {
@@ -87,6 +95,44 @@
 			pinmux = <PB2F_TCC0_WO2>;
 		};
 	};
+
+	/*
+	 * The module UART. SERCOM0 on the PCB too (D46), so the dev board exercises the same
+	 * peripheral the product uses.
+	 *
+	 * PA04/PA05 chosen by elimination on this board: the debugger holds PB00/PB01 (the CDC
+	 * console), PA20 (SWDIO), PA31 (SWCLK), PB03 (SW0) and PA30 (RESET); PA24/PA25 are the
+	 * 32.768 kHz crystal footprint; PB08/PB09 are the touch button; and PA08-PA15 sit in the
+	 * MVIO domain powered from VDDIO2, which is a needless dependency for a UART.
+	 *
+	 * Note porta is left status = "disabled". The pinctrl driver builds its port address table
+	 * with DT_NODE_EXISTS rather than a status check, so muxing works without instantiating a
+	 * GPIO device we never use.
+	 */
+	sercom0_uart_default: sercom0_uart_default {
+		group1 {
+			pinmux = <PA4C_SERCOM0_PAD0>, <PA5C_SERCOM0_PAD1>;
+		};
+	};
+};
+
+/*
+ * SERCOM0 as the module UART: PAD0 transmits, PAD1 receives, matching the board's own sercom1
+ * console wiring (txpo = 0, rxpo = 1).
+ */
+&sercom0 {
+	compatible = "microchip,sercom-g1-uart";
+	#address-cells = <1>;
+	#size-cells = <0>;
+	current-speed = <115200>;
+	data-bits = <8>;
+	parity = "none";
+	stop-bits = "1";
+	rxpo = <1>;
+	txpo = <0>;
+	pinctrl-0 = <&sercom0_uart_default>;
+	pinctrl-names = "default";
+	status = "okay";
 };
 
 /*
@@ -98,6 +144,13 @@
 &gclkperiph {
 	tcc0_gclk {
 		subsystem = <CLOCK_MCHP_GCLKPERIPH_ID_TCC0>;
+		gclkperiph-src = "gclk0";
+		gclkperiph-en = <1>;
+	};
+
+	/* Same requirement for SERCOM0: no channel here means a UART that never clocks. */
+	sercom0_gclk {
+		subsystem = <CLOCK_MCHP_GCLKPERIPH_ID_SERCOM0_CORE>;
 		gclkperiph-src = "gclk0";
 		gclkperiph-en = <1>;
 	};

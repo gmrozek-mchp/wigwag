@@ -1,39 +1,42 @@
 /*
- * wigwag — D49 spike: TCC0 PWM on PIC32CM PL10.
+ * wigwag — firmware entry point.
  *
- * Breathes one lamp at 0.8 Hz, the BUSY behaviour from CONTEXT.md. On the PL10 Curiosity Nano
- * the lamp is the board's own LED0, because PB02 carries both LED0 and TCC0/WO2.
+ * Currently two things: the D49 lamp (TCC0 PWM, proven on hardware) and the RNWF02 AT client
+ * talking to the module over SERCOM0. It is not the finished device — the received state does not
+ * yet drive the lamps, which is lamp.c's job.
  *
- * The point of the spike is the gate in front of the PCB (D49): does mainline's
- * pwm_mchp_tcc_g1 driver bind to this part with devicetree work alone? If the LED breathes,
- * TCC0 WO0/WO1/WO2 can be committed to the layout.
+ * On the PL10 Curiosity Nano the lamp is the board's own LED0, because PB02 carries both LED0 and
+ * TCC0/WO2, and that LED is active low (D72) — polarity comes from devicetree and is printed at
+ * boot so a silent regression cannot hide (D74).
  *
  * No dynamic allocation and no floating point anywhere — Rule 5, ADR-0008.
  *
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include <zephyr/kernel.h>
+#include "rnwf_at.h"
+#include "rnwf_at_cmds.h"
+#include "rnwf_uart.h"
+
 #include <zephyr/device.h>
 #include <zephyr/drivers/pwm.h>
+#include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
 
 static const struct pwm_dt_spec lamp_yellow = PWM_DT_SPEC_GET(DT_ALIAS(lamp_yellow));
 
+static struct rnwf_at at_client;
+
 /*
- * 125 steps of 10 ms = 1250 ms per cycle, intended as 0.8 Hz.
+ * 125 steps of 10 ms = 1250 ms per cycle = 0.8 Hz, the BUSY breathe rate from CONTEXT.md.
  *
- * Measured on hardware it is 1297 ms, i.e. 0.771 Hz — 3.8 % slow. The kernel tick is 10 kHz so
- * timeout rounding accounts for only 0.1 %; the rest is the loop's own work, mostly
- * pwm_set_pulse_dt() waiting on TCC SYNCBUSY across the clock domain boundary. Relative sleeps
- * accumulate that error by construction.
- *
- * Left as-is here because the spike's job is to prove TCC PWM, not to render lamps. lamp.c must
- * instead schedule on absolute deadlines (k_timer, or k_sleep with K_TIMEOUT_ABS_MS) so the rate
- * is set by the clock rather than by however long a render takes.
+ * Scheduled on absolute deadlines rather than k_msleep(). A relative sleep measures the gap
+ * *between* iterations, so every microsecond spent rendering or talking to the module is added to
+ * the period: measured 1297 ms against an intended 1250 ms before this changed (D70). Absolute
+ * deadlines make the rate the clock's business rather than the workload's.
  */
 #define BREATHE_STEPS	125U
-#define BREATHE_STEP_MS	10U
+#define BREATHE_STEP_MS	10
 #define LEVEL_MAX	255U
 
 /*
@@ -71,14 +74,58 @@ static uint32_t gamma_pulse(uint32_t level, uint32_t period)
 	return (period / LEVEL_MAX) * duty;
 }
 
+static void on_message(void *user, const char *topic, const char *payload)
+{
+	ARG_UNUSED(user);
+
+	/* lamp.c will map this onto the lamps; for now prove it arrives intact. */
+	printk("wigwag: %s = %s\n", topic, payload);
+}
+
+static void on_link(void *user, bool linked)
+{
+	ARG_UNUSED(user);
+
+	/*
+	 * Rule 4 / ADR-0007. Losing the link must become the amber flicker, not a stale lamp; that
+	 * behaviour belongs to lamp.c, so for now the transition is reported and nothing more.
+	 */
+	printk("wigwag: link %s\n", linked ? "LINKED" : "UNLINKED");
+}
+
+static const struct rnwf_at_config module_cfg = {
+	/*
+	 * Compile-time credentials for v1 (D56, ADR-0012). These placeholders are replaced by
+	 * Kconfig from a gitignored credentials.conf before this talks to a real access point.
+	 */
+	.ssid = "wigwag-test",
+	.passphrase = "",
+	.sec_type = RNWF_SEC_OPEN,
+
+	.broker_host = "localhost",
+	.broker_port = 1883,
+	.client_id = "wigwag-1",
+	.username = NULL,
+	.password = NULL,
+	.keep_alive_s = 60,
+
+	.state_topic = "wigwag/state",
+	.online_topic = "wigwag/online",
+};
+
 int main(void)
 {
+	static const struct rnwf_at_callbacks cb = {
+		.on_message = on_message,
+		.on_link = on_link,
+	};
 	uint64_t cycles = 0U;
-	uint32_t cycle_count = 0U;
 	uint32_t step = 0U;
+	int64_t deadline;
+	bool at_ready;
 	int ret;
 
-	printk("wigwag: D49 spike, TCC0 PWM on PIC32CM PL10\n");
+	printk("wigwag: starting\n");
 
 	if (!pwm_is_ready_dt(&lamp_yellow)) {
 		printk("wigwag: FAIL, PWM device not ready\n");
@@ -86,20 +133,25 @@ int main(void)
 	}
 
 	ret = pwm_get_cycles_per_sec(lamp_yellow.dev, lamp_yellow.channel, &cycles);
-	printk("wigwag: %s channel %u, period %u ns, %u cycles/s (ret %d)\n",
+	printk("wigwag: lamp %s ch%u, %u ns period, %u cycles/s (ret %d)\n",
 	       lamp_yellow.dev->name, lamp_yellow.channel, lamp_yellow.period,
 	       (uint32_t)cycles, ret);
-
-	/*
-	 * Report polarity from the devicetree spec rather than from a comment. The cnano's LED0 is
-	 * active low while mainline's board dts claims active high, so this is the one value most
-	 * likely to be wrong, and the hardest to spot by eye.
-	 */
 	printk("wigwag: polarity flags 0x%x (%s)\n", lamp_yellow.flags,
 	       ((lamp_yellow.flags & PWM_POLARITY_INVERTED) != 0) ? "inverted, active-low lamp"
 								 : "normal, active-high lamp");
 
+	at_ready = (rnwf_uart_init(&at_client, &module_cfg, &cb) == 0);
+	if (at_ready) {
+		printk("wigwag: module UART up, connecting to \"%s\"\n", module_cfg.ssid);
+		rnwf_at_start(&at_client, (uint32_t)k_uptime_get());
+	}
+
+	deadline = k_uptime_get();
+
 	while (true) {
+		static enum rnwf_at_state reported = RNWF_AT_ST_IDLE;
+		uint32_t now;
+
 		ret = pwm_set_pulse_dt(&lamp_yellow,
 				       gamma_pulse(breathe_level(step), lamp_yellow.period));
 		if (ret < 0) {
@@ -107,24 +159,38 @@ int main(void)
 			return ret;
 		}
 
-		step = (step + 1U) % BREATHE_STEPS;
-		if (step == 0U) {
+		if (at_ready) {
 			/*
-			 * One line per breathe cycle. Without it the spike is silent after boot,
-			 * so confirming it is running means resetting the target — and the
-			 * debugger cannot reset while the console port is open on the same USB
-			 * device. Reporting peak pulse also shows the duty range actually
-			 * reaching the hardware.
+			 * Receive is interrupt-driven into a ring, so a 10 ms drain cadence is
+			 * ample for AT traffic. Note that a long command blocks this loop while it
+			 * transmits, so the lamp will stutter during a connect burst — which is
+			 * precisely why lamp rendering moves to its own thread in lamp.c.
 			 */
-			cycle_count++;
-			printk("wigwag: breathe cycle %u at %u ms, carrier %u Hz "
-			       "(%u cycles/s, period %u ns), peak pulse %u ns\n",
-			       cycle_count, (uint32_t)k_uptime_get(),
-			       (uint32_t)(NSEC_PER_SEC / lamp_yellow.period), (uint32_t)cycles,
-			       lamp_yellow.period, gamma_pulse(LEVEL_MAX, lamp_yellow.period));
+			now = (uint32_t)k_uptime_get();
+			rnwf_uart_poll(&at_client);
+			rnwf_at_tick(&at_client, now);
+
+			/*
+			 * Report transitions only. A device whose sole output is a lamp is
+			 * otherwise unobservable during bring-up: with no module attached this
+			 * loops reset -> timeout -> backoff in complete silence, which is
+			 * indistinguishable from a crash.
+			 */
+			if (at_client.state != reported) {
+				static const char *const names[] = {
+					"IDLE", "RESETTING", "SCRIPT", "READY", "BACKOFF",
+				};
+
+				reported = at_client.state;
+				printk("wigwag: at %s (errors %u timeouts %u overruns %u)\n",
+				       names[reported], at_client.errors, at_client.timeouts,
+				       rnwf_uart_overruns());
+			}
 		}
 
-		k_msleep(BREATHE_STEP_MS);
+		step = (step + 1U) % BREATHE_STEPS;
+		deadline += BREATHE_STEP_MS;
+		k_sleep(K_TIMEOUT_ABS_MS(deadline));
 	}
 
 	return 0;

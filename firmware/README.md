@@ -140,6 +140,39 @@ against 28 s). The board's `board.cmake` also offers an `mplab_ipe` runner; it i
 here, and with a capture open it fails outright — `java.lang.RuntimeException: Comm error`
 mid-erase, which can leave the part partially programmed.
 
+## The module UART
+
+The RNWF02 lives on **SERCOM0**, the same peripheral the PCB uses (D46), reached through the
+`wigwag,module-uart` chosen node. On the Curiosity Nano:
+
+| Signal | Pin | Pinmux |
+|---|---|---|
+| TX (SERCOM0 PAD0) | **PA04** | `PA4C_SERCOM0_PAD0` |
+| RX (SERCOM0 PAD1) | **PA05** | `PA5C_SERCOM0_PAD1` |
+
+Chosen by elimination: the debugger holds PB00/PB01 (the CDC console), PA20 (SWDIO), PA31 (SWCLK),
+PB03 (SW0) and PA30 (RESET); PA24/PA25 are the crystal footprint; PB08/PB09 the touch button; and
+PA08–PA15 sit in the MVIO domain fed from VDDIO2.
+
+With nothing attached, the client behaves exactly as it should — and says so:
+
+```
+wigwag: at RESETTING (errors 0 timeouts 1 overruns 0)
+wigwag: at BACKOFF   (errors 0 timeouts 2 overruns 0)
+```
+
+It sends `AT+RST`, waits 5 s for `+BOOT`, times out, backs off and retries. `overruns 0` means the
+receive ring is keeping up; a non-zero count would mean the poll loop is too slow.
+
+To drive it for real, wire a 3.3 V USB-UART adapter to PA04/PA05 (TX→RX crossed, common ground) and
+run the fake module against it:
+
+```sh
+.venv/bin/python firmware/sim/fake_rnwf02.py --port /dev/cu.usbserial-XXXX --broker localhost
+```
+
+**Do not** use a 5 V adapter: PA04/PA05 are on the VDD domain at 3.3 V.
+
 ## Moving the Zephyr pin
 
 `firmware/west.yml` pins mainline to an explicit commit, deliberately, never floating (ADR-0006).
@@ -154,8 +187,13 @@ D49 spike:
 | Build | Flash | RAM | of 8 KB |
 |---|---|---|---|
 | `samples/basic/blinky` | 12 576 B | 3 872 B | 47.3 % |
-| D49 spike (this app, with the per-cycle heartbeat) | 14 132 B | 3 880 B | 47.4 % |
-| D49 spike, stacks sized down (measurement only, not adopted) | 13 972 B | 1 704 B | 20.8 % |
+| D49 spike (lamp only) | 14 132 B | 3 880 B | 47.4 % |
+| **lamp + AT client + SERCOM0 transport** | **17 816 B** | **4 800 B** | **58.6 %** |
+| lamp only, stacks sized down (measurement, not adopted) | 13 972 B | 1 704 B | 20.8 % |
+
+The AT client's 920 B is attributed exactly: `at_client` (`struct rnwf_at`) 624 B, `rnwf_uart.c`
+268 B (a 256-byte receive ring plus indices), and 44 B of UART driver state for both SERCOM
+instances. So the whole application is ~900 B against 3 766 B of kernel.
 
 **Almost all of it is kernel stacks, not application code.** `ram_report` attributes 3 766 B of
 3 878 B to `kernel/init.c` — `z_interrupt_stacks` 2 048 B, `z_main_stack` 1 024 B,
