@@ -29,6 +29,14 @@ int lamp_pwm_init(void);
  */
 void lamp_pwm_set_state(enum wigwag_state state);
 
+/**
+ * Set the runtime master brightness, 0-255, from `wigwag/brightness`.
+ *
+ * Scales what the lamps report. It cannot silence the fail-visible pattern, which floors at
+ * LAMP_FAULT_MIN_BRIGHTNESS — see lamp.h.
+ */
+void lamp_pwm_set_brightness(uint8_t brightness);
+
 /** Update the link condition. False overrides every state with the fail-visible pattern. */
 void lamp_pwm_set_link(bool trusted);
 

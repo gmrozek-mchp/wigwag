@@ -76,6 +76,9 @@ struct rnwf_at_config {
 	 * Last Will. Subscribed so a dead host or broker becomes visible; NULL to skip.
 	 */
 	const char *host_online_topic;
+
+	/** Runtime master brightness, 0-255, retained (CONTEXT.md). NULL to skip. */
+	const char *brightness_topic;
 };
 
 /**

@@ -1,0 +1,46 @@
+# Copyright (c) 2026 wigwag
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  The three wigwag lamps, with per-lamp calibration.
+
+  Why this exists rather than using pwm-leds: LEDs of different colours have quite different
+  luminous efficiency at the same duty cycle, so equal perceptual levels do not look equally bright.
+  Correcting that is *calibration* - a fixed property of a particular board and its parts, exactly
+  like polarity - so it belongs in devicetree.
+
+  It is deliberately not the same mechanism as `wigwag/brightness`, which is a runtime *preference*
+  carried over MQTT. Sharing one mechanism would mean calibration gets clobbered whenever somebody
+  turns the device down for the evening.
+
+  pwm-leds cannot express this: its child binding allows only `label` and `pwms`.
+
+compatible: "wigwag,lamps"
+
+include: base.yaml
+
+child-binding:
+  description: One lamp.
+
+  properties:
+    pwms:
+      required: true
+      type: phandle-array
+      description: |
+        The PWM channel driving this lamp, as <&controller channel period flags>. Flags carry
+        polarity, which differs per lamp on some boards.
+
+    label:
+      type: string
+      description: Human-readable name, for diagnostics.
+
+    gain:
+      type: int
+      default: 255
+      description: |
+        Per-lamp brightness calibration, 0-255, applied to the perceptual level before gamma.
+
+        255 means "use the level as-is". Lower it for a lamp that is brighter than its siblings at
+        the same level, so the three can be balanced against each other. Applied multiplicatively
+        with the runtime brightness, and measured by eye - there is no way to derive it from a
+        datasheet, because it depends on the LED, its series resistor and its diffuser.

@@ -32,10 +32,18 @@ static const struct pwm_dt_spec lamps[LAMP_COUNT] = {
 	[LAMP_RED] = PWM_DT_SPEC_GET(DT_ALIAS(lamp_red)),
 };
 
+/* Per-lamp calibration, a board property (wigwag,lamps binding). Not runtime state. */
+static const uint8_t lamp_gain[LAMP_COUNT] = {
+	[LAMP_GREEN] = DT_PROP(DT_ALIAS(lamp_green), gain),
+	[LAMP_YELLOW] = DT_PROP(DT_ALIAS(lamp_yellow), gain),
+	[LAMP_RED] = DT_PROP(DT_ALIAS(lamp_red), gain),
+};
+
 static struct {
 	enum wigwag_state state;
 	uint32_t state_since_ms;
 	bool trusted;
+	uint8_t brightness;
 	struct k_spinlock lock;
 } shared = {
 	/*
@@ -45,19 +53,26 @@ static struct {
 	 */
 	.state = WIGWAG_IDLE,
 	.trusted = false,
+	/*
+	 * Full until the host says otherwise. The retained wigwag/brightness arrives moments after
+	 * subscribing; starting dark would mean a device that looks broken until then.
+	 */
+	.brightness = 255,
 };
 
-static void render(const struct lamp_frame *f)
+static void render(const struct lamp_frame *f, uint8_t brightness, bool fault)
 {
 	size_t i;
 
 	for (i = 0; i < LAMP_COUNT; i++) {
+		uint8_t level = lamp_scale(f->level[i], lamp_gain[i], brightness, fault);
+
 		/*
 		 * Polarity comes from each lamp's devicetree flags, which pwm_set_pulse_dt() applies
 		 * — this board mixes active-low and active-high lamps, and the PCB will be uniformly
 		 * active high, so nothing here may assume either.
 		 */
-		(void)pwm_set_pulse_dt(&lamps[i], lamp_gamma_pulse(f->level[i], lamps[i].period));
+		(void)pwm_set_pulse_dt(&lamps[i], lamp_gamma_pulse(level, lamps[i].period));
 	}
 }
 
@@ -73,16 +88,18 @@ static void lamp_thread(void *a, void *b, void *c)
 		enum wigwag_state state;
 		uint32_t since;
 		bool trusted;
+		uint8_t brightness;
 		struct lamp_frame f;
 		k_spinlock_key_t key = k_spin_lock(&shared.lock);
 
 		state = shared.state;
 		since = shared.state_since_ms;
 		trusted = shared.trusted;
+		brightness = shared.brightness;
 		k_spin_unlock(&shared.lock, key);
 
 		f = lamp_render(state, trusted, (uint32_t)k_uptime_get(), since);
-		render(&f);
+		render(&f, brightness, !trusted);
 
 		/*
 		 * Absolute deadlines, so a slow frame does not push the animation's rate around
@@ -108,6 +125,7 @@ static void lamp_selftest(void)
 	static const char *const names[LAMP_COUNT] = { "green", "yellow", "red" };
 	size_t i;
 
+	/* Deliberately full brightness, ignoring gain and the master: this is a wiring test. */
 	for (i = 0; i < LAMP_COUNT; i++) {
 		printk("wigwag: lamp test %s (ch%u)\n", names[i], lamps[i].channel);
 		(void)pwm_set_pulse_dt(&lamps[i], lamps[i].period);
@@ -138,9 +156,11 @@ int lamp_pwm_init(void)
 		}
 	}
 
-	printk("wigwag: lamps on %s ch%u/%u/%u, flags %x/%x/%x\n", lamps[0].dev->name,
-	       lamps[LAMP_GREEN].channel, lamps[LAMP_YELLOW].channel, lamps[LAMP_RED].channel,
-	       lamps[LAMP_GREEN].flags, lamps[LAMP_YELLOW].flags, lamps[LAMP_RED].flags);
+	printk("wigwag: lamps on %s ch%u/%u/%u, flags %x/%x/%x, gain %u/%u/%u\n",
+	       lamps[0].dev->name, lamps[LAMP_GREEN].channel, lamps[LAMP_YELLOW].channel,
+	       lamps[LAMP_RED].channel, lamps[LAMP_GREEN].flags, lamps[LAMP_YELLOW].flags,
+	       lamps[LAMP_RED].flags, lamp_gain[LAMP_GREEN], lamp_gain[LAMP_YELLOW],
+	       lamp_gain[LAMP_RED]);
 
 	lamp_selftest();
 
@@ -166,6 +186,14 @@ void lamp_pwm_set_state(enum wigwag_state state)
 		shared.state_since_ms = (uint32_t)k_uptime_get();
 	}
 
+	k_spin_unlock(&shared.lock, key);
+}
+
+void lamp_pwm_set_brightness(uint8_t brightness)
+{
+	k_spinlock_key_t key = k_spin_lock(&shared.lock);
+
+	shared.brightness = brightness;
 	k_spin_unlock(&shared.lock, key);
 }
 

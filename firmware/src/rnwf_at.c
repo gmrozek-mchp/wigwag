@@ -207,6 +207,16 @@ static size_t step_subscribe_host(struct rnwf_at *at)
 	return bld(at, "%s=\"%s\",1", RNWF_AT_MQTT_SUB, at->cfg->host_online_topic);
 }
 
+static size_t step_subscribe_brightness(struct rnwf_at *at)
+{
+	if (at->cfg->brightness_topic == NULL) {
+		return 0;
+	}
+
+	/* QoS 1, retained on the broker, so the device adopts the desk's setting on every connect. */
+	return bld(at, "%s=\"%s\",1", RNWF_AT_MQTT_SUB, at->cfg->brightness_topic);
+}
+
 static const struct at_step connect_script[] = {
 	{ step_verbosity,	NULL,			TMO_SHORT_MS },
 	{ step_ssid,		NULL,			TMO_SHORT_MS },
@@ -223,6 +233,7 @@ static const struct at_step connect_script[] = {
 	{ step_mqtt_connect,	RNWF_AEC_MQTT_CONNACK,	TMO_MQTT_MS },
 	{ step_subscribe,	NULL,			TMO_SHORT_MS },
 	{ step_subscribe_host,	NULL,			TMO_SHORT_MS },
+	{ step_subscribe_brightness, NULL,		TMO_SHORT_MS },
 };
 
 #define SCRIPT_LEN ((uint8_t)(sizeof(connect_script) / sizeof(connect_script[0])))

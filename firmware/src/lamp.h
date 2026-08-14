@@ -58,6 +58,17 @@ struct lamp_frame {
 #define LAMP_ERROR_PERIOD_MS	250	/* red/yellow fast alternate, 4 Hz */
 #define LAMP_FLICKER_STEP_MS	70	/* amber flicker: deliberately not a rhythm */
 
+/*
+ * Floor applied to the fail-visible pattern, whatever the runtime brightness says.
+ *
+ * Rule 4 / ADR-0007: brightness is a preference about lamps that *report*. The flicker is not a
+ * report, it is the device admitting it does not know - and a device dimmed to nothing would be
+ * indistinguishable from one that is switched off, which is the silent lie the whole design exists
+ * to prevent. So brightness can dim it, but not below this. A smoke alarm you cannot turn down to
+ * zero.
+ */
+#define LAMP_FAULT_MIN_BRIGHTNESS 96
+
 /**
  * Render one frame.
  *
@@ -89,5 +100,27 @@ const char *wigwag_state_str(enum wigwag_state state);
  * the Zephyr side where no test could reach it and shipped a bug for exactly that reason.
  */
 uint32_t lamp_gamma_pulse(uint8_t level, uint32_t period);
+
+/**
+ * Apply per-lamp calibration and runtime brightness to a perceptual level.
+ *
+ * Both scales act on the *perceptual* level rather than the duty, so halving brightness looks like
+ * half. Scaling the duty instead would look like about 79 %, because gamma cubes.
+ *
+ * @param gain       per-lamp calibration from devicetree, 0-255 (255 = unchanged)
+ * @param brightness runtime master, 0-255, from `wigwag/brightness`
+ * @param fault      true when showing the fail-visible pattern; enforces
+ *                   LAMP_FAULT_MIN_BRIGHTNESS so the device cannot be dimmed into silence
+ */
+uint8_t lamp_scale(uint8_t level, uint8_t gain, uint8_t brightness, bool fault);
+
+/**
+ * Parse a `wigwag/brightness` payload: a bare decimal 0-255, per CONTEXT.md — not JSON.
+ *
+ * Returns false on anything else, including out of range, and the caller must then keep the value
+ * it had. Guessing a brightness from a malformed message is a smaller lie than guessing a state,
+ * but it is the same kind.
+ */
+bool lamp_brightness_parse(const char *payload, uint8_t *out);
 
 #endif /* LAMP_H */

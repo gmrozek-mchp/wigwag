@@ -7,6 +7,65 @@ Entries record what was done, why, and — importantly — what was tried and re
 
 ---
 
+## 2026-08-14 — brightness, in two layers that deliberately do not share a mechanism
+
+Asked whether brightness should be one value or per bulb. The answer turned out to be both, at
+different layers, because they are different problems:
+
+| | what it is | where it lives | changes |
+|---|---|---|---|
+| `wigwag/brightness` | **preference** — "too bright for my desk at night" | MQTT, retained, 0-255 | at runtime |
+| per-lamp `gain` | **calibration** — LEDs of different colours are not equally efficient at the same duty | devicetree, beside polarity | per board |
+
+Sharing one mechanism would give the worst of both: calibration clobbered whenever somebody turns
+the device down for the evening, and a pile of per-colour topics to carry a fixed hardware fact.
+Recorded as D88.
+
+**Done**
+- `firmware/dts/bindings/led/wigwag,lamps.yaml` — an **app-local binding**. `pwm-leds` cannot express
+  this: its child binding allows only `label` and `pwms`. Zephyr's docs confirm bindings are found in
+  `dts/bindings` under the application source directory, so no CMake change was needed; a local
+  `dts/bindings/vendor-prefixes.txt` registers the `wigwag` prefix so the build does not warn about an
+  unknown vendor.
+- `lamp_scale()` and `lamp_brightness_parse()` in `lamp.c` — pure, tested, on the *core* side of the
+  boundary this time. The gamma bug earlier this phase came from putting arithmetic in the renderer
+  where no test could reach it; not repeating that.
+- Subscribed as a fourth script step, so the device adopts the desk's setting on every connect. Being
+  retained on the broker means no NVM and nothing to persist locally.
+
+**Both scales act on the perceptual level, not the duty (D89)**
+Halving brightness has to *look* half. Since gamma cubes, scaling the duty would land at about 79 %
+apparent brightness — technically dimmer, visibly not half. Scaling the level first and then cubing
+gives what a brightness control should mean.
+
+**Brightness cannot silence the fail-visible pattern (D90)**
+The tension worth naming: if brightness 0 dimmed everything, a device that had lost its link would go
+dark, which is indistinguishable from switched off — the exact silent lie Rule 4 and ADR-0007 exist to
+forbid. So the flicker floors at `LAMP_FAULT_MIN_BRIGHTNESS` (96). Brightness is a preference about
+lamps that *report*; the flicker is the device admitting it does not know, and that is not
+negotiable. A smoke alarm you cannot turn down to zero.
+
+**Verified on hardware**
+- Seven-step sweep, 255 → 192 → 128 → 64 → 32 → 8 → 0, each applied in order and confirmed dimming.
+- **With brightness at 0, dropping `host_online` left green dark while yellow and red flickered.**
+  The floor holds where it counts, on the device, not just in a test.
+- `gain 255/255/255` read from devicetree and printed at boot, alongside channels and polarity flags.
+
+The boot self-test deliberately ignores both gain and brightness: it is a wiring test, and a lamp that
+fails to light because someone dimmed the device would defeat the point.
+
+**Measured** — flash 21 372 B (34.8 %), RAM **4 480 B (54.7 %)**, unchanged: gain lives in flash and
+brightness is one byte. Tests now **1571 checks, 0 failures** across four suites.
+
+**Open**
+- All three gains are 255, i.e. no correction. Deliberately: any number picked now calibrates *bench*
+  parts — an SMD yellow with a fixed resistor against two hand-wired LEDs — and the PCB will run
+  10 mm diffused lamps from 5 V through FETs at 20-60 mA, a completely different operating point. The
+  mechanism persists; the numbers will not.
+- Where dimming stops being useful was not established, and is not worth establishing on bench LEDs.
+
+---
+
 ## 2026-08-14 — button.c: presses published, and the device finally talks back
 
 **Done**

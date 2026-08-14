@@ -196,6 +196,56 @@ uint32_t lamp_gamma_pulse(uint8_t level, uint32_t period)
 	return v;
 }
 
+uint8_t lamp_scale(uint8_t level, uint8_t gain, uint8_t brightness, bool fault)
+{
+	uint32_t master = brightness;
+	uint32_t v;
+
+	if (fault && master < LAMP_FAULT_MIN_BRIGHTNESS) {
+		master = LAMP_FAULT_MIN_BRIGHTNESS;
+	}
+
+	/* Calibration first, then preference. Both stay inside 16 bits before each divide. */
+	v = ((uint32_t)level * gain) / LEVEL_MAX;
+	v = (v * master) / LEVEL_MAX;
+
+	return (uint8_t)v;
+}
+
+bool lamp_brightness_parse(const char *payload, uint8_t *out)
+{
+	uint32_t v = 0;
+	int digits = 0;
+
+	if (payload == NULL || out == NULL) {
+		return false;
+	}
+
+	while (*payload == ' ' || *payload == '\t') {
+		payload++;
+	}
+
+	for (; *payload >= '0' && *payload <= '9'; payload++) {
+		v = (v * 10U) + (uint32_t)(*payload - '0');
+		digits++;
+		if (v > LEVEL_MAX) {
+			return false;	/* out of range, and cannot recover by reading further */
+		}
+	}
+
+	/* Trailing whitespace or a newline is fine; anything else is not a number. */
+	while (*payload == ' ' || *payload == '\t' || *payload == '\r' || *payload == '\n') {
+		payload++;
+	}
+
+	if (digits == 0 || *payload != '\0') {
+		return false;
+	}
+
+	*out = (uint8_t)v;
+	return true;
+}
+
 const char *wigwag_state_str(enum wigwag_state state)
 {
 	switch (state) {

@@ -50,6 +50,7 @@ static const struct rnwf_at_config module_cfg = {
 	.state_topic = "wigwag/state",
 	.online_topic = "wigwag/online",
 	.host_online_topic = "wigwag/host_online",
+	.brightness_topic = "wigwag/brightness",
 };
 
 /*
@@ -125,6 +126,19 @@ static void on_message(void *user, const char *topic, const char *payload)
 	if (link_note_message(&link_state, topic, payload, module_cfg.host_online_topic,
 			      (uint32_t)k_uptime_get())) {
 		printk("wigwag: host_online = %s\n", payload);
+		return;
+	}
+
+	if (strcmp(topic, module_cfg.brightness_topic) == 0) {
+		uint8_t level;
+
+		if (lamp_brightness_parse(payload, &level)) {
+			printk("wigwag: brightness %u\n", level);
+			lamp_pwm_set_brightness(level);
+		} else {
+			/* Keep the current setting rather than guess at a malformed number. */
+			printk("wigwag: bad brightness payload, ignored\n");
+		}
 		return;
 	}
 

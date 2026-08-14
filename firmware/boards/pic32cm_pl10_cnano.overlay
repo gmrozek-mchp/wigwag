@@ -60,8 +60,8 @@
 	 * "driving the connected I/O line to GND will activate the LED" while mainline's board
 	 * devicetree claims GPIO_ACTIVE_HIGH, which is a second upstream bug (D72).
 	 */
-	pwmleds {
-		compatible = "pwm-leds";
+	lamps {
+		compatible = "wigwag,lamps";
 
 		/*
 		 * Polarity is per lamp, and on this board it genuinely differs: the on-board yellow
@@ -69,16 +69,29 @@
 		 * LED -> GND and are active high. The PCB will be uniformly active high through
 		 * low-side FETs (D26), so nothing may assume a single polarity.
 		 */
+		/*
+		 * `gain` is per-lamp calibration, measured by eye, not derived from anything. All three
+		 * start at 255 (no correction); lower whichever lamp looks brighter than its siblings at
+		 * the same state. On this bench the on-board yellow is an SMD part with a fixed series
+		 * resistor while green and red are hand-wired through their own resistors, so they have
+		 * no reason to match.
+		 */
 		lamp_green: lamp_green {
 			pwms = <&tcc0 0 PWM_USEC(2000) PWM_POLARITY_NORMAL>;
+			label = "green";
+			gain = <255>;
 		};
 
 		lamp_red: lamp_red {
 			pwms = <&tcc0 1 PWM_USEC(2000) PWM_POLARITY_NORMAL>;
+			label = "red";
+			gain = <255>;
 		};
 
 		lamp_yellow: lamp_yellow {
 			pwms = <&tcc0 2 PWM_USEC(2000) PWM_POLARITY_INVERTED>;
+			label = "yellow";
+			gain = <255>;
 		};
 	};
 

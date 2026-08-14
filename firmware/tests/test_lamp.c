@@ -250,6 +250,88 @@ static void test_gamma_is_perceptual_not_linear(void)
 	      period);
 }
 
+/* -------------------------------------------------- brightness and gain */
+
+static void test_brightness_is_perceptual_not_linear_in_duty(void)
+{
+	/*
+	 * Halving brightness must look like half, which means halving the *level*. Scaling the duty
+	 * instead would land near 79 % apparent brightness, because gamma cubes.
+	 */
+	CHECK(lamp_scale(255, 255, 128, false) == 128, "half brightness gave level %u",
+	      lamp_scale(255, 255, 128, false));
+	CHECK(lamp_scale(255, 255, 255, false) == 255, "full brightness altered the level");
+	CHECK(lamp_scale(128, 255, 255, false) == 128, "unity gain altered the level");
+}
+
+static void test_gain_calibrates_per_lamp(void)
+{
+	/* A lamp that reads too bright gets its gain lowered; the level drops proportionally. */
+	CHECK(lamp_scale(255, 128, 255, false) == 128, "gain 128 gave %u",
+	      lamp_scale(255, 128, 255, false));
+	CHECK(lamp_scale(255, 0, 255, false) == 0, "gain 0 did not turn the lamp off");
+
+	/* Gain and brightness compose. */
+	CHECK(lamp_scale(255, 128, 128, false) == 64, "gain*brightness gave %u",
+	      lamp_scale(255, 128, 128, false));
+}
+
+static void test_brightness_zero_darkens_reporting_lamps(void)
+{
+	CHECK(lamp_scale(255, 255, 0, false) == 0, "brightness 0 left a reporting lamp lit");
+	CHECK(lamp_scale(LAMP_IDLE_DIM, 255, 0, false) == 0, "brightness 0 left IDLE green lit");
+}
+
+static void test_brightness_cannot_silence_the_fault_pattern(void)
+{
+	/*
+	 * Rule 4 / ADR-0007. Brightness is a preference about lamps that report; the flicker is the
+	 * device admitting it does not know. Dimmed to nothing it would be indistinguishable from a
+	 * device that is switched off, which is the silent lie the design exists to prevent.
+	 */
+	unsigned b;
+
+	for (b = 0; b < LAMP_FAULT_MIN_BRIGHTNESS; b++) {
+		uint8_t out = lamp_scale(255, 255, (uint8_t)b, true);
+
+		CHECK(out >= LAMP_FAULT_MIN_BRIGHTNESS,
+		      "fault pattern dimmed to %u at brightness %u", out, b);
+	}
+
+	/* Above the floor it tracks the request like anything else. */
+	CHECK(lamp_scale(255, 255, 200, true) == 200, "fault pattern ignored a brightness above the floor");
+}
+
+static void test_brightness_parse_accepts_plain_decimals(void)
+{
+	struct { const char *in; uint8_t expect; } ok[] = {
+		{ "0", 0 }, { "1", 1 }, { "128", 128 }, { "255", 255 },
+		{ " 64", 64 }, { "64\n", 64 }, { "64\r\n", 64 }, { "007", 7 },
+	};
+	size_t i;
+
+	for (i = 0; i < sizeof(ok) / sizeof(ok[0]); i++) {
+		uint8_t got = 99;
+
+		CHECK(lamp_brightness_parse(ok[i].in, &got), "rejected \"%s\"", ok[i].in);
+		CHECK(got == ok[i].expect, "\"%s\" parsed as %u", ok[i].in, got);
+	}
+}
+
+static void test_brightness_parse_rejects_rather_than_guesses(void)
+{
+	const char *bad[] = { "", " ", "256", "999", "-1", "abc", "12x", "1.5",
+			      "{\"brightness\":50}", "0x40" };
+	size_t i;
+
+	for (i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+		uint8_t got = 42;
+
+		CHECK(!lamp_brightness_parse(bad[i], &got), "accepted \"%s\" as %u", bad[i], got);
+		CHECK(got == 42, "\"%s\" clobbered the previous value", bad[i]);
+	}
+}
+
 /* ---------------------------------------------------------------- parsing */
 
 static void test_parse_accepts_real_payloads(void)
@@ -312,6 +394,12 @@ int main(void)
 	test_unlinked_overrides_every_state();
 	test_unlinked_never_looks_idle();
 	test_flicker_is_not_the_busy_breathe();
+	test_brightness_is_perceptual_not_linear_in_duty();
+	test_gain_calibrates_per_lamp();
+	test_brightness_zero_darkens_reporting_lamps();
+	test_brightness_cannot_silence_the_fault_pattern();
+	test_brightness_parse_accepts_plain_decimals();
+	test_brightness_parse_rejects_rather_than_guesses();
 	test_gamma_endpoints_and_monotonicity();
 	test_gamma_has_no_dead_zone();
 	test_gamma_is_perceptual_not_linear();
