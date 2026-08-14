@@ -445,4 +445,11 @@ Debuggers already on hand (PICkit 5, PICkit Basic, Atmel-ICE, J-Link) all work v
 - **TLS + Trust&Go** for the MQTT link, using the module's on-board secure element.
 - **Secure credential storage** using the module's Trust&Go element, and EU RED Delegated Act
   compliance if wigwag ever became a product rather than a personal device (see ADR-0012).
-- **Upstreaming** the PL10 TCC PWM devicetree support to mainline Zephyr, if D49 shows it missing.
+- **Upstreaming two mainline bug fixes** found during the D49 spike — the `microchip,{tc,tcc}-g1-pwm`
+  binding naming its third `pwm-cell` `polarity` instead of `flags` (so polarity is silently
+  discarded), and `pic32cm_pl10_cnano`'s LED0 declared active high when the hardware is active low.
+  Process, maintainer routing and ready-to-send issue and commit text are in
+  [`docs/upstreaming-to-zephyr.md`](upstreaming-to-zephyr.md). Neither is submitted yet.
+- **Upstreaming the PL10 TCC PWM devicetree enablement** itself (the `tcc0` node, its generic-clock
+  channel and pinctrl group) — currently an application overlay, and the natural home is
+  `dts/arm/microchip/pic32c/pic32cm_pl/common/pic32cm_pl.dtsi` so all four PL10 packages get it.

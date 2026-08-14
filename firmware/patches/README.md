@@ -5,6 +5,9 @@ will silently revert them. Each one exists to fix a mainline bug this project hi
 meant to go upstream — ADR-0006's ladder: fix it locally, then contribute it, rather than living on
 a fork.
 
+**Submitting these upstream:** [`docs/upstreaming-to-zephyr.md`](../../docs/upstreaming-to-zephyr.md)
+has the verified process, the maintainer routing, and ready-to-use issue and commit text.
+
 Re-apply after any `west update`:
 
 ```sh
