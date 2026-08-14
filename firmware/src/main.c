@@ -14,6 +14,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include "link.h"
 #include "rnwf_at.h"
 #include "rnwf_at_cmds.h"
 #include "rnwf_uart.h"
@@ -26,6 +27,7 @@
 static const struct pwm_dt_spec lamp_yellow = PWM_DT_SPEC_GET(DT_ALIAS(lamp_yellow));
 
 static struct rnwf_at at_client;
+static struct link link_state;
 
 /*
  * 125 steps of 10 ms = 1250 ms per cycle = 0.8 Hz, the BUSY breathe rate from CONTEXT.md.
@@ -74,23 +76,21 @@ static uint32_t gamma_pulse(uint32_t level, uint32_t period)
 	return (period / LEVEL_MAX) * duty;
 }
 
-static void on_message(void *user, const char *topic, const char *payload)
+/*
+ * The fail-visible pattern (Rule 4, ADR-0007, D34): what the lamp does when the device cannot
+ * confirm what it is showing. Deliberately ugly and unlike any real state — an irregular stutter
+ * rather than a rhythm, so it can never be mistaken for BUSY breathing or a WAIT blink.
+ *
+ * Provisional. With three lamps this becomes the amber flicker proper; lamp.c owns it. Kept here
+ * because a supervisor that only writes to a console it has no way to reach is not fail-visible at
+ * all — the whole point is that the device looks wrong.
+ */
+static uint32_t flicker_pulse(uint32_t step, uint32_t period)
 {
-	ARG_UNUSED(user);
+	static const uint8_t pattern[] = { 200, 12, 90, 8, 255, 30, 60, 10 };
+	const uint32_t slot = (step / 6U) % (uint32_t)(sizeof(pattern) / sizeof(pattern[0]));
 
-	/* lamp.c will map this onto the lamps; for now prove it arrives intact. */
-	printk("wigwag: %s = %s\n", topic, payload);
-}
-
-static void on_link(void *user, bool linked)
-{
-	ARG_UNUSED(user);
-
-	/*
-	 * Rule 4 / ADR-0007. Losing the link must become the amber flicker, not a stale lamp; that
-	 * behaviour belongs to lamp.c, so for now the transition is reported and nothing more.
-	 */
-	printk("wigwag: link %s\n", linked ? "LINKED" : "UNLINKED");
+	return (period / LEVEL_MAX) * pattern[slot];
 }
 
 static const struct rnwf_at_config module_cfg = {
@@ -111,7 +111,35 @@ static const struct rnwf_at_config module_cfg = {
 
 	.state_topic = "wigwag/state",
 	.online_topic = "wigwag/online",
+	.host_online_topic = "wigwag/host_online",
 };
+
+static void on_message(void *user, const char *topic, const char *payload)
+{
+	ARG_UNUSED(user);
+
+	/* The host liveness topic is link supervision's, not the lamps'. */
+	if (link_note_message(&link_state, topic, payload, module_cfg.host_online_topic,
+			      (uint32_t)k_uptime_get())) {
+		printk("wigwag: host_online = %s\n", payload);
+		return;
+	}
+
+	/* lamp.c will map this onto the lamps; for now prove it arrives intact. */
+	printk("wigwag: %s = %s\n", topic, payload);
+}
+
+static void on_link(void *user, bool linked)
+{
+	ARG_UNUSED(user);
+
+	/*
+	 * The AT client's view is only one of the inputs to the link condition — see link.h. It is
+	 * link.c that decides whether the device may believe what it is showing.
+	 */
+	link_note_at(&link_state, linked, (uint32_t)k_uptime_get());
+	printk("wigwag: at link %s\n", linked ? "up" : "down");
+}
 
 int main(void)
 {
@@ -140,6 +168,8 @@ int main(void)
 	       ((lamp_yellow.flags & PWM_POLARITY_INVERTED) != 0) ? "inverted, active-low lamp"
 								 : "normal, active-high lamp");
 
+	link_init(&link_state, LINK_HOST_GRACE_MS);
+
 	at_ready = (rnwf_uart_init(&at_client, &module_cfg, &cb) == 0);
 	if (at_ready) {
 		printk("wigwag: module UART up, connecting to \"%s\"\n", module_cfg.ssid);
@@ -150,10 +180,18 @@ int main(void)
 
 	while (true) {
 		static enum rnwf_at_state reported = RNWF_AT_ST_IDLE;
+		static enum link_condition link_reported = LINK_LINKED;
 		uint32_t now;
 
+		/*
+		 * Until lamp.c maps state onto lamps, the lamp shows one of two things: the BUSY
+		 * breathe when the link is trusted, or the fail-visible stutter when it is not.
+		 */
 		ret = pwm_set_pulse_dt(&lamp_yellow,
-				       gamma_pulse(breathe_level(step), lamp_yellow.period));
+				       link_is_trusted(&link_state)
+					       ? gamma_pulse(breathe_level(step),
+							     lamp_yellow.period)
+					       : flicker_pulse(step, lamp_yellow.period));
 		if (ret < 0) {
 			printk("wigwag: FAIL, pwm_set_pulse_dt returned %d\n", ret);
 			return ret;
@@ -182,10 +220,20 @@ int main(void)
 				};
 
 				reported = at_client.state;
-				printk("wigwag: at %s (errors %u timeouts %u overruns %u)\n",
-				       names[reported], at_client.errors, at_client.timeouts,
+				printk("wigwag: at %s (errors %u timeouts %u polls %u "
+				       "overruns %u)\n", names[reported], at_client.errors,
+				       at_client.timeouts, at_client.polls,
 				       rnwf_uart_overruns());
 			}
+		}
+
+		link_tick(&link_state, (uint32_t)k_uptime_get());
+
+		if (link_get(&link_state) != link_reported) {
+			link_reported = link_get(&link_state);
+			printk("wigwag: link %s (%s)\n",
+			       (link_reported == LINK_LINKED) ? "LINKED" : "UNLINKED",
+			       link_reason_str(link_state.reason));
 		}
 
 		step = (step + 1U) % BREATHE_STEPS;

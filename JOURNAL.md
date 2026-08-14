@@ -7,6 +7,86 @@ Entries record what was done, why, and — importantly — what was tried and re
 
 ---
 
+## 2026-08-14 — link.c: the device stops being able to lie
+
+Built before `lamp.c` deliberately. Until link supervision exists, a renderer can only produce a
+confident display of something nobody is confirming — so building the lamps first would have meant
+building the ability to lie and fixing it afterwards (Rule 4).
+
+**Done**
+- `firmware/src/link.{h,c}` — the link condition in `CONTEXT.md`'s sense, LINKED or UNLINKED, with a
+  diagnostic reason. Zephyr-free and clock-injected like the AT client, so it unit-tests on the host.
+- AT client keepalive: while READY it sends a bare `AT` every 5 s and requires `OK` within 2 s.
+- AT client now handles `+MQTTCONN:<CONN_STATE>` — 0 means the module lost the broker.
+- Subscribes to `wigwag/host_online` as a second script step.
+- `firmware/tests/test_link.c`, 25 checks. Suites now total **125 checks, 0 failures**.
+- A provisional fail-visible lamp pattern in `main.c`, so an untrusted link actually *looks* wrong.
+
+**Three failure domains, three detectors — the design point**
+`+MQTTCONN:<CONN_STATE>` was the last unread piece of the spec, and reading it made the structure
+obvious. There are three independent ways to lose the truth and no single signal covers them:
+
+| Failure | What the device sees | Detector |
+|---|---|---|
+| Module or UART dies | nothing at all | keepalive `AT` goes unanswered |
+| Broker or Wi-Fi lost | module is healthy and answers | `+MQTTCONN:0` from the module |
+| Host daemon dies | module *and* broker healthy | `wigwag/host_online` = 0 via its Last Will |
+
+The middle and last cases are why supervision could not simply live inside the AT client: a module
+happily connected to a broker that nothing is publishing to is not a link worth trusting, and only
+the application knows that. Hence `link.c` — the AT client reports what it can see, and `link.c`
+decides whether the device may believe its own lamps.
+
+**The policy is deliberately pessimistic.** LINKED requires positive evidence of every hop;
+everything unproven is UNLINKED. Two consequences worth stating because they look like bugs
+otherwise:
+- The device does **not** go LINKED when the AT client reaches READY. It waits for `host_online`.
+- A reconnect **discards** the previous `host_online` reading. A new AT session means a new
+  subscription, so the old value is not evidence about the new one — trusting it would reintroduce
+  the same bug one layer up. There is a 3 s grace period for the retained value to arrive, so a
+  normal connect does not flash UNLINKED on its way up.
+
+**Verified on hardware, all three cases**
+```
+wigwag: link UNLINKED (starting)          <- never claims a link before proof
+wigwag: at READY ... host_online = 1
+wigwag: link LINKED (ok)                  <- only once both hops are proven
+wigwag: host_online = 0
+wigwag: link UNLINKED (host gone)         <- module and broker healthy, daemon dead
+wigwag: host_online = 1
+wigwag: link LINKED (ok)
+wigwag: at link down
+wigwag: at BACKOFF (errors 0 timeouts 1 polls 5 overruns 0)
+wigwag: link UNLINKED (module/broker down)
+```
+`polls 5 timeouts 1` is the line that matters: the module was killed with no AEC and no warning —
+the exact scenario that previously produced fourteen seconds of silence and a device claiming
+LINKED forever. Worst-case detection is the poll interval plus its timeout, 7 s, inside D34's 10 s
+budget by construction rather than by measurement.
+
+**A test that caught the right thing for the wrong reason**
+Adding the `host_online` subscribe broke `test_connack_prefix_not_confused_with_connstate`, which
+counted `OK`s to reach READY. The failure was correct — the script *is* one step longer — but the
+test was over-specified. Rewritten to drain OKs until the state changes, so the next script step
+does not break it again. Worth noting that three tests already used loops and only this one counted.
+
+**Measured** — flash 18 616 B (30.3 %), RAM 4 832 B of 8 KB (**59.0 %**). Link supervision costs
+**32 bytes** of RAM, which is `struct link`; the rest of the growth is code.
+
+**Open**
+- `flicker_pulse()` in `main.c` is provisional. With three lamps it becomes the amber flicker
+  proper, and it belongs to `lamp.c`; it exists now because a supervisor whose only output is a
+  console the device cannot reach is not fail-visible at all.
+- The keepalive interval and timeout (5 s / 2 s) are chosen, not tuned. They cost one `AT` round
+  trip per 5 s, which is negligible traffic, but the tradeoff against D34's 10 s has not been
+  examined with a real module's latency.
+- Still no watchdog. Plan item 17 pairs the WDT with link supervision, and a wedged AT thread is
+  exactly the case supervision cannot catch by itself.
+- The device still never publishes `wigwag/online = 1`, so its own Last Will has no positive
+  counterpart.
+
+---
+
 ## 2026-08-14 — SERCOM0 and the Zephyr transport: the AT client now runs on silicon
 
 **Done**

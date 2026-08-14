@@ -375,6 +375,8 @@ Remaining Phase 0 loose end: nothing is committed to git yet (D16).
     Zephyr's POSIX architecture does not work on macOS (D66, ADR-0015).
 16. `lamp.c`: 3 PWM channels, ~100 Hz render, gamma-corrected steady/breathe/blink/flicker.
 17. `button.c` (GPIO IRQ + debounce) and `link.c` (supervision → amber flicker, WDT).
+    `link.c` done and verified on hardware across all three failure domains (D75); the WDT and the
+    real three-lamp amber flicker are still outstanding.
 18. Hardware bring-up: `EV10P22A` + `EV72E72A`, five jumpers (TX, RX, MCLR, 3V3, GND).
 19. **Record `ram_report`/`rom_report`** in the journal; confirm the 8 KB budget holds (D48).
 

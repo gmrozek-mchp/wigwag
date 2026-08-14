@@ -70,6 +70,12 @@ struct rnwf_at_config {
 
 	const char *state_topic;	/* subscribed: host -> device */
 	const char *online_topic;	/* device -> host, and the LWT topic */
+
+	/*
+	 * The host's own liveness marker (CONTEXT.md): retained, with 0 published as the daemon's
+	 * Last Will. Subscribed so a dead host or broker becomes visible; NULL to skip.
+	 */
+	const char *host_online_topic;
 };
 
 /**
@@ -104,6 +110,13 @@ struct rnwf_at {
 	uint32_t retry_at_ms;
 	uint32_t attempts;
 
+	/*
+	 * Keepalive. While READY the client polls the module with a bare AT and requires an OK,
+	 * because a module that dies silently otherwise leaves the client believing it is linked
+	 * forever — observed on hardware, and exactly what ADR-0007 forbids (D75).
+	 */
+	uint32_t next_poll_ms;
+
 	uint32_t now_ms;
 
 	/* One bounded buffer per direction. */
@@ -125,6 +138,7 @@ struct rnwf_at {
 	uint32_t errors;
 	uint32_t timeouts;
 	uint32_t messages;
+	uint32_t polls;		/* keepalive polls issued while READY */
 };
 
 void rnwf_at_init(struct rnwf_at *at, const struct rnwf_at_config *cfg,

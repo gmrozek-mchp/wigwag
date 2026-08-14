@@ -13,16 +13,23 @@ LDFLAGS ?= -fsanitize=address,undefined
 
 BUILD := build
 BIN   := $(BUILD)/test_rnwf_at
+LINK  := $(BUILD)/test_link
 SIM   := $(BUILD)/at_host
 SRCS  := test_rnwf_at.c ../src/rnwf_at.c
 DEPS  := ../src/rnwf_at.h ../src/rnwf_at_cmds.h
 
-.PHONY: all sim clean
-all: $(BIN)
+.PHONY: all link sim clean
+all: $(BIN) $(LINK)
 	./$(BIN)
+	./$(LINK)
 
 $(BIN): $(SRCS) $(DEPS) | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $(SRCS) $(LDFLAGS)
+
+link: $(LINK)
+	./$(LINK)
+$(LINK): test_link.c ../src/link.c ../src/link.h | $(BUILD)
+	$(CC) $(CFLAGS) -o $@ test_link.c ../src/link.c $(LDFLAGS)
 
 # The host runner drives the real rnwf_at.c against sim/fake_rnwf02.py over a PTY (ADR-0015).
 sim: $(SIM)

@@ -53,6 +53,13 @@
 #define RNWF_AT_RESET		"AT+RST"
 #define RNWF_AT_GET_VERSION	"AT+GMR"	/* D62: confirm firmware >= 3.0 for +CFGCP */
 
+/*
+ * Bare "AT" as a liveness probe: the cheapest command that must produce a final result code. Used
+ * as the keepalive while linked, because a module that stops answering is the only way to detect a
+ * silent death over a UART with no carrier signal (D75).
+ */
+#define RNWF_AT_PING		"AT"
+
 /* Wi-Fi station config, "AT+WSTAC=<ID>,<VAL>" (spec: +WSTAC). */
 #define RNWF_AT_WSTAC		"AT+WSTAC"
 #define RNWF_AT_WSTA_ENABLE	"AT+WSTA=1"	/* 1 = use configuration from +WSTAC */
@@ -108,6 +115,15 @@ enum rnwf_mqttc_id {
 #define RNWF_AEC_WSTA_GOT_IP	"+WSTAAIP"	/* :<ASSOC_ID>,<IP_ADDRESS> */
 #define RNWF_AEC_MQTT_CONNACK	"+MQTTCONNACK"	/* :<CONNACK_FLAGS>,<CONN_REASON_CODE> */
 #define RNWF_AEC_MQTT_SUBRX	"+MQTTSUBRX"	/* :<DUP>,<QOS>,<RETAIN>,<TOPIC>,<PAYLOAD> */
+
+/*
+ * "+MQTTCONN:<CONN_STATE>" — 0 not connected, 1 connected. Shares a prefix with +MQTTCONNACK, so
+ * matching must require ':' or end-of-line after the name. This is the module's report that the
+ * broker or network went away while the module itself stayed healthy — the one failure the
+ * keepalive poll cannot see.
+ */
+#define RNWF_AEC_MQTT_CONN_STATE	"+MQTTCONN"
+#define RNWF_MQTT_NOT_CONNECTED		0
 
 /*
  * +MQTTCONNACK <CONN_REASON_CODE>: 0 = success; 128 unspecified, 129 malformed packet,

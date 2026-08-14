@@ -110,6 +110,7 @@ static const struct rnwf_at_config cfg = {
 	.keep_alive_s = 60,
 	.state_topic = "wigwag/state",
 	.online_topic = "wigwag/online",
+	.host_online_topic = "wigwag/host_online",
 };
 
 static struct fake fake;
@@ -158,6 +159,90 @@ static void bring_up(void)
 }
 
 /* ----------------------------------------------------------------- the tests */
+
+static void test_subscribes_to_host_liveness(void)
+{
+	bool saw = false;
+	size_t i;
+
+	setup();
+	bring_up();
+
+	for (i = 0; i < fake.n_sent; i++) {
+		if (strcmp(fake.sent[i], "AT+MQTTSUB=\"wigwag/host_online\",1") == 0) {
+			saw = true;
+		}
+	}
+
+	CHECK(saw, "did not subscribe to the host liveness topic");
+}
+
+static void test_keepalive_polls_while_ready(void)
+{
+	size_t before;
+
+	setup();
+	bring_up();
+	before = fake.n_sent;
+
+	/* Nothing before the interval elapses. */
+	rnwf_at_tick(&at, 4000);
+	CHECK(fake.n_sent == before, "polled too early: '%s'", last_sent());
+
+	rnwf_at_tick(&at, 5100);
+	CHECK(fake.n_sent == before + 1U, "did not poll after the interval");
+	CHECK(strcmp(last_sent(), RNWF_AT_PING) == 0, "poll sent '%s'", last_sent());
+	CHECK(at.state == RNWF_AT_ST_READY, "poll changed state to %d", at.state);
+
+	/* An OK keeps the link and must not walk off the end of the script. */
+	feed("OK\r\n");
+	CHECK(at.state == RNWF_AT_ST_READY, "state %d after poll OK", at.state);
+	CHECK(link_up_count == 1, "link re-announced after a poll OK (%d times)", link_up_count);
+}
+
+static void test_silent_module_is_detected(void)
+{
+	/*
+	 * The failure observed on hardware (D75): the module stops answering and the client must
+	 * stop claiming a link, rather than sitting in READY forever.
+	 */
+	setup();
+	bring_up();
+
+	rnwf_at_tick(&at, 5100);
+	CHECK(strcmp(last_sent(), RNWF_AT_PING) == 0, "expected a poll");
+
+	rnwf_at_tick(&at, 6000);
+	CHECK(rnwf_at_is_linked(&at), "gave up before the poll timeout");
+
+	rnwf_at_tick(&at, 7200);
+	CHECK(!rnwf_at_is_linked(&at), "still linked after an unanswered poll");
+	CHECK(link_down_count == 1, "on_link(false) fired %d times", link_down_count);
+	CHECK(at.state == RNWF_AT_ST_BACKOFF, "state %d", at.state);
+}
+
+static void test_broker_loss_reported_by_module(void)
+{
+	/* +MQTTCONN:0 - the module is fine, the broker is not. The poll would never see this. */
+	setup();
+	bring_up();
+
+	feed("\r+MQTTCONN:0\r\n");
+
+	CHECK(!rnwf_at_is_linked(&at), "still linked after +MQTTCONN:0");
+	CHECK(link_down_count == 1, "on_link(false) fired %d times", link_down_count);
+}
+
+static void test_connected_state_aec_is_harmless(void)
+{
+	setup();
+	bring_up();
+
+	feed("\r+MQTTCONN:1\r\n");
+
+	CHECK(rnwf_at_is_linked(&at), "+MQTTCONN:1 dropped the link");
+	CHECK(link_down_count == 0, "+MQTTCONN:1 reported a link loss");
+}
 
 static void test_reset_then_boot_starts_script(void)
 {
@@ -391,9 +476,15 @@ static void test_connack_prefix_not_confused_with_connstate(void)
 		CHECK(strstr(last_sent(), RNWF_AT_MQTT_SUB) != NULL,
 		      "real CONNACK did not advance to subscribe, sent '%s'", last_sent());
 
-		/* Subscribe still has to be acknowledged before the link is trusted. */
-		feed("OK\r\n");
-		CHECK(at.state == RNWF_AT_ST_READY, "state %d after subscribe OK", at.state);
+		/*
+		 * The remaining subscribes still have to be acknowledged before the link is trusted.
+		 * Drained in a loop rather than counted, so adding a script step does not break this
+		 * test again — which is exactly what happened when host_online was added.
+		 */
+		while (at.state == RNWF_AT_ST_SCRIPT) {
+			feed("OK\r\n");
+		}
+		CHECK(at.state == RNWF_AT_ST_READY, "state %d after subscribe OKs", at.state);
 	}
 }
 
@@ -526,6 +617,11 @@ int main(void)
 	printf("rnwf_at host tests\n");
 
 	test_reset_then_boot_starts_script();
+	test_subscribes_to_host_liveness();
+	test_keepalive_polls_while_ready();
+	test_silent_module_is_detected();
+	test_broker_loss_reported_by_module();
+	test_connected_state_aec_is_harmless();
 	test_leading_cr_aec_framing();
 	test_ok_is_accepted_not_done();
 	test_full_bring_up_and_command_text();

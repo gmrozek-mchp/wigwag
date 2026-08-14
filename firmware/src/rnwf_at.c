@@ -31,8 +31,16 @@
 #define TMO_WIFI_MS	30000	/* AT+WSTA=1 -> +WSTAAIP (association + DHCP) */
 #define TMO_MQTT_MS	15000	/* AT+MQTTCONN -> +MQTTCONNACK (DNS + TCP + CONNECT) */
 
+#define TMO_POLL_MS	2000	/* a bare AT must be answered promptly or the module is gone */
+
 #define BACKOFF_MIN_MS	1000
 #define BACKOFF_MAX_MS	30000
+
+/*
+ * Keepalive cadence while READY. Long enough to be negligible traffic, short enough that a dead
+ * module is noticed well inside D34's 10 s fail-visible budget once the timeout is added.
+ */
+#define POLL_INTERVAL_MS	5000
 
 /* ---------------------------------------------------------------- transmit */
 
@@ -185,6 +193,20 @@ static size_t step_subscribe(struct rnwf_at *at)
 	return bld(at, "%s=\"%s\",1", RNWF_AT_MQTT_SUB, at->cfg->state_topic);
 }
 
+static size_t step_subscribe_host(struct rnwf_at *at)
+{
+	/*
+	 * The host's liveness marker. Retained with 0 as the daemon's Last Will, so subscribing is
+	 * all it takes to learn that the host or broker has gone - which the module poll cannot
+	 * see, because the module is perfectly healthy in that case (D75).
+	 */
+	if (at->cfg->host_online_topic == NULL) {
+		return 0;
+	}
+
+	return bld(at, "%s=\"%s\",1", RNWF_AT_MQTT_SUB, at->cfg->host_online_topic);
+}
+
 static const struct at_step connect_script[] = {
 	{ step_verbosity,	NULL,			TMO_SHORT_MS },
 	{ step_ssid,		NULL,			TMO_SHORT_MS },
@@ -200,6 +222,7 @@ static const struct at_step connect_script[] = {
 	{ step_lwt,		NULL,			TMO_SHORT_MS },
 	{ step_mqtt_connect,	RNWF_AEC_MQTT_CONNACK,	TMO_MQTT_MS },
 	{ step_subscribe,	NULL,			TMO_SHORT_MS },
+	{ step_subscribe_host,	NULL,			TMO_SHORT_MS },
 };
 
 #define SCRIPT_LEN ((uint8_t)(sizeof(connect_script) / sizeof(connect_script[0])))
@@ -263,6 +286,7 @@ static void run_script_from_current(struct rnwf_at *at)
 	at->awaiting_ok = false;
 	at->awaiting_aec = NULL;
 	at->backoff_ms = BACKOFF_MIN_MS;
+	at->next_poll_ms = at->now_ms + POLL_INTERVAL_MS;
 	notify_link(at, true);
 }
 
@@ -426,6 +450,16 @@ static void handle_line(struct rnwf_at *at, const char *line)
 	/* Final result codes for the command in flight. */
 	if (at->awaiting_ok && strcmp(line, RNWF_AT_OK) == 0) {
 		at->awaiting_ok = false;
+
+		if (at->state == RNWF_AT_ST_READY) {
+			/*
+			 * Answer to a keepalive poll: the module is alive. Not a script step, so
+			 * advancing here would run off the end and re-announce the link.
+			 */
+			at->next_poll_ms = at->now_ms + POLL_INTERVAL_MS;
+			return;
+		}
+
 		if (at->awaiting_aec == NULL) {
 			advance_step(at);
 		}
@@ -487,6 +521,23 @@ static void handle_line(struct rnwf_at *at, const char *line)
 	if (line_is_aec(line, RNWF_AEC_WSTA_LINK_DOWN, &args) ||
 	    line_is_aec(line, RNWF_AEC_WSTA_ERROR, &args)) {
 		enter_backoff(at);
+		return;
+	}
+
+	/*
+	 * "+MQTTCONN:<CONN_STATE>", 0 = not connected. This is how the module reports a broker or
+	 * network loss that leaves the module itself healthy, so the keepalive poll would keep
+	 * succeeding and never notice (D75). Distinct from +MQTTCONNACK, which line_is_aec keeps
+	 * separate by requiring ':' or end-of-line after the name.
+	 */
+	if (line_is_aec(line, RNWF_AEC_MQTT_CONN_STATE, &args)) {
+		uint32_t state;
+
+		if (parse_uint(args, &state) && state == 0U) {
+			enter_backoff(at);
+		} else {
+			at->aecs_ignored++;
+		}
 		return;
 	}
 
@@ -592,8 +643,23 @@ void rnwf_at_tick(struct rnwf_at *at, uint32_t now_ms)
 		}
 		return;
 
-	case RNWF_AT_ST_IDLE:
 	case RNWF_AT_ST_READY:
+		if (at->awaiting_ok) {
+			if ((int32_t)(now_ms - at->deadline_ms) >= 0) {
+				/* The module stopped answering: stop claiming a link. */
+				at->timeouts++;
+				enter_backoff(at);
+			}
+		} else if ((int32_t)(now_ms - at->next_poll_ms) >= 0) {
+			at->polls++;
+			at->awaiting_ok = true;
+			at->awaiting_aec = NULL;
+			at->deadline_ms = now_ms + TMO_POLL_MS;
+			at_send_raw(at, RNWF_AT_PING);
+		}
+		return;
+
+	case RNWF_AT_ST_IDLE:
 	default:
 		return;
 	}
