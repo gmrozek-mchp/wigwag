@@ -7,6 +7,91 @@ Entries record what was done, why, and — importantly — what was tried and re
 
 ---
 
+## 2026-08-14 — The AT client core, with host tests that need neither Zephyr nor hardware
+
+**Done**
+- `firmware/src/rnwf_at.{h,c}` — line assembler, request/response engine, AEC dispatch, connect
+  state machine with capped exponential backoff, and publish. **No Zephyr headers**, no allocation,
+  one bounded buffer per direction (D66, ADR-0002, Rule 5).
+- `firmware/tests/{test_rnwf_at.c,Makefile}` — **82 checks, 0 failures**, plain clang, ~1 s to run.
+  `-Wall -Wextra -Werror -Wshadow -Wconversion` plus AddressSanitizer and UBSan.
+
+**Why the connect sequence is a script, not a state per command**
+The sequence is linear — `ATV3 → WSTAC×3 → WSTA=1 → +WSTAAIP → MQTTC×n → MQTTLWT → MQTTCONN →
++MQTTCONNACK → MQTTSUB` — so it is expressed as an array of steps, each with a command builder and
+an *optional AEC to await*. That makes the specification's most dangerous rule structural rather
+than remembered: **`OK` means accepted, not done.** A step with `await_aec` set does not advance
+when `OK` arrives; it keeps waiting on the same deadline. Encoding it once in the engine means no
+future step can forget it.
+
+Optional configuration falls out for free: a builder returning 0 means "skip me", which is how a
+NULL username, a NULL password, an open network and a zero keep-alive are handled with no branching
+in the state machine. Tested — the username and password commands must not appear at all when the
+config omits them.
+
+**Measured on the target** (`arm-zephyr-eabi-gcc -Os -mcpu=cortex-m0plus`, clean under `-Werror
+-Wconversion`)
+- **2 040 bytes of flash**, 0 data, 0 bss for the module itself.
+- **`sizeof(struct rnwf_at)` = 620 bytes** — both buffers and all state.
+
+ADR-0008's estimate allowed ~0.5 KB for "UART RX ring + AT line buffer" and ~0.5 KB for "MQTT
+payload parse + lamp/link state". 620 bytes for the entire client sits inside that, which is the
+first evidence that the 8 KB target is not merely survivable but comfortable.
+
+**Two bugs the tests caught, one mine and one a bad test**
+- **`field()` used `strrchr` to find a quoted field's closing quote.** For
+  `+MQTTSUBRX:0,1,1,"wigwag/state","{...}"` that returned the *last* quote in the whole line, so
+  the topic came out as `wigwag/state","{"state":"WAIT","sessions":2}`. `strchr` is correct: the
+  closing quote is the next one, not the final one. Would have been invisible on a topic containing
+  no quotes and fatal on the real payload.
+- The prefix-collision test asserted `READY` immediately after `+MQTTCONNACK`, but the client still
+  has to send `AT+MQTTSUB` and await *its* `OK`. That was the **test** being wrong about the
+  protocol, and fixing it made the test better: it now asserts the subscribe was issued, then that
+  `OK` completes the link.
+
+**Verified by test, not by inspection**
+- Leading-CR AEC framing works, including split byte-at-a-time across `feed()` calls.
+- `+MQTTCONN` (connection state) is **not** mistaken for `+MQTTCONNACK`. Matching requires `:` or
+  end-of-line after the name, so a shared prefix cannot satisfy a wait.
+- A JSON payload containing both commas and double quotes survives intact.
+- `ERROR:12` backs off — the `ATV3` form, since bare `ERROR` is not what we will see.
+- `+MQTTCONNACK:0,130` (protocol error) backs off rather than proceeding as if connected.
+- A boot timeout backs off, does not retry early, and re-sends `AT+RST` when it does.
+- Backoff grows and holds its 30 s cap over 20 consecutive failures.
+- `+WSTALD` while `READY` reports `on_link(false)` — Rule 4 and ADR-0007 in a test.
+- Publish is refused unless `READY`, and emits the exact `AT+MQTTPUB=0,0,<retain>,...` text.
+- An oversized line is dropped **whole** — never wrapped and parsed as two lines — and the
+  assembler still works afterwards.
+- Empty lines, non-`+` junk, unknown AECs and a malformed `+MQTTSUBRX` leave the client in `READY`.
+
+**The find that may change the wire protocol**
+`AT+MQTTLWT` gave the device a real Last Will, but the reverse direction has a problem worth
+raising before it bites: **the specification does not say how the module escapes a double quote
+inside a quoted AEC field.** Our `wigwag/state` payload is JSON — `{"state":"WAIT","sessions":2}` —
+so it is full of them. The client sidesteps this by taking the payload as everything after the
+fourth comma rather than parsing quotes, which is correct for any escaping scheme that does not
+rewrite bytes. But if the module *does* escape or truncate, a JSON payload is the worst possible
+choice for the one message the device must never misread.
+
+Cheap insurance would be a payload with no quotes and no commas at all — `WAIT` or `WAIT:2` — which
+costs nothing on the host side and removes the failure mode entirely. Not changed unilaterally:
+`wigwag/state` is specified in `CONTEXT.md` and the host already publishes JSON. Flagged for a
+decision, and it is answerable the moment the module arrives.
+
+**Open**
+- The Zephyr UART adapter and SERCOM0 devicetree work are not written yet, so the client has never
+  run against anything but the test harness.
+- `fake_rnwf02.py` still to come; it must be generated from `rnwf_at_cmds.h`'s vocabulary so the
+  fake and the client cannot drift apart.
+- `rnwf_at.c` is not yet in `firmware/CMakeLists.txt` — deliberately, since nothing calls it and a
+  dead module would distort the footprint numbers recorded for the D49 spike.
+
+**Next**
+`fake_rnwf02.py` plus the two adapters — Zephyr UART for the target, POSIX for the host — then the
+end-to-end run against a real broker.
+
+---
+
 ## 2026-08-14 — The RNWF02 AT wire protocol, verified from the specification
 
 **Done**
