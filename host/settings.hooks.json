@@ -1,4 +1,6 @@
 {
+  "//": "wigwag hook wiring. Merge the SessionStart/UserPromptSubmit/... entries below into your .claude/settings.json 'hooks' object. Exec form is used throughout so ${CLAUDE_PROJECT_DIR} needs no quoting and works on every platform. On Windows without Git Bash, swap the command for: powershell.exe -NoProfile -ExecutionPolicy Bypass -File ${CLAUDE_PROJECT_DIR}/host/hooks/wg-notify.ps1",
+
   "hooks": {
     "SessionStart": [
       {
@@ -97,15 +99,6 @@
     ],
 
     "SessionEnd": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/skills/journal/journal-reminder.sh",
-            "timeout": 5
-          }
-        ]
-      },
       {
         "matcher": "*",
         "hooks": [

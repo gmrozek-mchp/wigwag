@@ -33,6 +33,32 @@ review requests, cron jobs. See `wigwag set --help`.
 Works identically whether you run Claude Code in the VS Code extension or a terminal — hooks
 are a CLI-level feature and the extension bundles the CLI.
 
+## Getting started
+
+The host software works today, with no hardware. macOS, Linux and Windows.
+
+```sh
+# 1. install uv:  brew install uv  |  curl -LsSf https://astral.sh/uv/install.sh | sh
+#                 |  winget install astral-sh.uv
+cd host
+uv sync                          # one build step
+uv run pytest                    # 93 tests, no broker needed
+
+uv run wigwagd --dry-run -v      # terminal 1: logs what it would publish
+uv run wigwag set WAIT           # terminal 2: drive it by hand
+uv run wigwag status
+```
+
+Then add a broker and wire up the Claude Code hooks so your sessions drive it
+automatically. **[host/README.md](host/README.md) is the full runbook** — broker install
+and service setup for all three platforms, connecting to a remote broker, running the
+daemon at login, and troubleshooting.
+
+> One trap worth knowing before you start: a default `mosquitto` install accepts
+> connections **only from the same machine**, which works for testing the host software
+> and silently breaks the device. See
+> [the local-only trap](host/README.md#-the-local-only-trap).
+
 ## Two things it deliberately gets right
 
 **It never lies.** If the device loses the broker for more than 10 seconds, it stops showing the

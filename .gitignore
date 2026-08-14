@@ -22,6 +22,9 @@ fp-info-cache
 ~*.*
 *.net
 
+# --- mosquitto persistence, if a broker is run from inside the repo ---
+mosquitto.db
+
 # --- session transcript archive (SpecStory extension) ---
 .specstory/
 

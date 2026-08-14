@@ -157,14 +157,23 @@ FET selection: logic-level N-channel, Vgs(th) low enough to fully enhance at 3.3
 
 | # | Decision | Status |
 |---|---|---|
-| D28 | Transport = MQTT to mosquitto on the Mac, **retained** messages | settled |
-| D29 | v1 auth = username/password on the LAN; TLS deferred to a later ADR | open |
+| D28 | Transport = MQTT, **retained** messages; broker local *or* remote (ADR-0011) | built |
+| **D29** | **TLS defaults ON for any non-loopback broker**; explicit plaintext allowed but warns loudly (ADR-0011) | built |
 | D30 | Aggregation `ERROR > WAIT > BUSY > IDLE`, per-`session_id`, 15-min TTL | settled |
-| D31 | Daemon in Python 3 + `paho-mqtt` | settled |
-| D32 | Hook client in POSIX `sh` + `nc` — no Python/Node in the hook path, < 10 ms | settled |
+| D31 | Daemon + CLI in Python 3.11+ with `paho-mqtt`, managed by **uv**; paho imported lazily so tests need no deps | built |
+| **D32** | **Hook client is shell using bash `/dev/udp`** over loopback UDP — no `jq`/`sed`/`nc`/Python/Node. Measured **2.9 ms median** (ADR-0010) | built |
+| **D52** | **Loopback UDP, not AF_UNIX** — no Windows AF_UNIX datagrams, and UDP `sendto` cannot block or fail when the daemon is down, making Rule 3 structural | built |
+| **D53** | **Cross-platform host**: per-platform config/runtime paths, PowerShell hook fallback. Windows is **untested** | built |
+| **D54** | Coalescing keyed on `state` + session count, **not** `reason` — else every tool call republishes twice | built |
+| **D55** | `topic_prefix` and `client_id` configurable, so two lights can share one broker | built |
 | D33 | Hooks always `exit 0` and write **nothing** to stdout | settled |
 | D34 | Fail-visible: > 10 s without broker → amber flicker | settled |
 | D35 | Button publishes raw presses; the host decides meaning | settled |
+| **D56** | **Commissioning: compile-time Kconfig for v1; SoftAP provisioning via the module's own service for v1.1** (ADR-0012) | settled |
+| **D57** | **USB commissioning is impossible** — PL10 has no USB peripheral (Table 8-1). Would need an MCP2221A bridge and would reverse D24 | settled |
+| **D58** | Long-press the existing button enters provisioning mode; all three lamps cycle so the mode is unmistakable | settled |
+| **D59** | PCB must break out host UART (SERCOM0) to pads/header — bench commissioning at zero BOM cost | settled |
+| **D60** | **Broker config commissioning is unsolved**; stays compile-time even in v1.1 until the `AT+WPROV` socket is extended | open |
 | D36 | Generic push API (`wigwag set …`) for CI, PR bots, cron | settled |
 | D37 | Credentials in gitignored `firmware/credentials.conf` + `host/.env` | settled |
 | **D47** | **Works identically in the VS Code extension and the terminal** — hooks are a CLI-level feature and the extension bundles the CLI, so one implementation covers both | settled |
@@ -394,7 +403,9 @@ Debuggers already on hand (PICkit 5, PICkit Basic, Atmel-ICE, J-Link) all work v
 
 | # | Question | Assumption if unanswered |
 |---|---|---|
-| D29 | TLS to the broker in v1? | No — username/password on the LAN, TLS as a later ADR |
+| D29 | *Resolved* — TLS is automatic off-loopback (ADR-0011). Device-side TLS with Trust&Go remains future work. | — |
+| D60 | How does the *broker* config get commissioned, not just Wi-Fi? | Compile-time via Kconfig; extend the `AT+WPROV` socket in v1.1 |
+| — | Does the RNWF02 provisioning service behave as documented? | Assume yes; **Phase 2 spike** alongside D49 |
 | D17 | Install hooks into `.claude/settings.json`? | Yes, project-local, journal reminder now and state hooks in Phase 1 |
 
 ## Future directions (noted, not planned)
@@ -403,5 +414,6 @@ Debuggers already on hand (PICkit 5, PICkit Basic, Atmel-ICE, J-Link) all work v
   means writing an adapter that reports session states, not touching firmware or protocol.
   Claude Code alone is sufficient for now.
 - **TLS + Trust&Go** for the MQTT link, using the module's on-board secure element.
-- **AP-mode provisioning** instead of compile-time Wi-Fi credentials.
+- **Secure credential storage** using the module's Trust&Go element, and EU RED Delegated Act
+  compliance if wigwag ever became a product rather than a personal device (see ADR-0012).
 - **Upstreaming** the PL10 TCC PWM devicetree support to mainline Zephyr, if D49 shows it missing.

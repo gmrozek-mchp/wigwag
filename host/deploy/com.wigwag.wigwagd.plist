@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd agent to run wigwagd at login on macOS.
+
+  Install:
+      # edit the two REPLACE_ME paths below first
+      cp com.wigwag.wigwagd.plist ~/Library/LaunchAgents/
+      launchctl load  ~/Library/LaunchAgents/com.wigwag.wigwagd.plist
+      launchctl start com.wigwag.wigwagd
+
+  Status / logs:
+      launchctl list | grep wigwag
+      tail -f /tmp/wigwagd.log
+
+  Remove:
+      launchctl unload ~/Library/LaunchAgents/com.wigwag.wigwagd.plist
+      rm ~/Library/LaunchAgents/com.wigwag.wigwagd.plist
+
+  A LaunchAgent (not a LaunchDaemon) is correct here: wigwagd is a per-user
+  tool that needs your config and writes a per-user status file.
+
+  Put the broker password in the EnvironmentVariables block below rather than in
+  the config file if you prefer, but note this plist is then a plaintext secret
+  on disk — same trade-off either way.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.wigwag.wigwagd</string>
+
+	<!-- Absolute paths: launchd has almost no PATH. Point at the venv
+	     interpreter created by `uv sync`, not at `uv` itself, so there is no
+	     wrapper process between launchd and the daemon. -->
+	<key>ProgramArguments</key>
+	<array>
+		<string>REPLACE_ME/host/.venv/bin/python</string>
+		<string>-m</string>
+		<string>wigwagd</string>
+		<string>-v</string>
+	</array>
+
+	<key>WorkingDirectory</key>
+	<string>REPLACE_ME/host</string>
+
+	<key>RunAtLoad</key>
+	<true/>
+
+	<!-- Restart if it dies. The light failing quietly is the one outcome the
+	     project is built to avoid. -->
+	<key>KeepAlive</key>
+	<true/>
+
+	<key>StandardOutPath</key>
+	<string>/tmp/wigwagd.log</string>
+	<key>StandardErrorPath</key>
+	<string>/tmp/wigwagd.log</string>
+
+	<key>EnvironmentVariables</key>
+	<dict>
+		<!-- <key>WIGWAG_MQTT_PASSWORD</key><string>...</string> -->
+		<key>PATH</key>
+		<string>/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>
+	</dict>
+</dict>
+</plist>

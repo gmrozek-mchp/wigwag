@@ -1,0 +1,68 @@
+# systemd *user* unit to run wigwagd at login on Linux.
+#
+# Install:
+#     # edit the two REPLACE_ME paths below first
+#     mkdir -p ~/.config/systemd/user
+#     cp wigwagd.service ~/.config/systemd/user/
+#     systemctl --user daemon-reload
+#     systemctl --user enable --now wigwagd
+#
+# Status / logs:
+#     systemctl --user status wigwagd
+#     journalctl --user -u wigwagd -f
+#
+# Survive logout (otherwise the user manager stops at your last session):
+#     sudo loginctl enable-linger "$USER"
+#
+# A *user* unit, not a system one: wigwagd reads your per-user config and writes
+# a per-user status file, and it needs no privileges.
+
+[Unit]
+Description=wigwag host daemon (AI session status light)
+Documentation=https://github.com/gregmrozek/wigwag
+# Only meaningful once the network is up, since it connects to a broker.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Absolute path to the venv interpreter created by `uv sync` — not `uv` itself,
+# so systemd supervises the daemon rather than a wrapper process.
+ExecStart=REPLACE_ME/host/.venv/bin/python -m wigwagd -v
+WorkingDirectory=REPLACE_ME/host
+
+# Keep the broker password out of the unit file, which is world-readable:
+#     mkdir -p ~/.config/wigwag && chmod 700 ~/.config/wigwag
+#     echo 'WIGWAG_MQTT_PASSWORD=...' > ~/.config/wigwag/env
+#     chmod 600 ~/.config/wigwag/env
+# The leading '-' makes a missing file non-fatal.
+EnvironmentFile=-%h/.config/wigwag/env
+
+# Pin the status file explicitly. Without this the daemon would derive it from
+# XDG_RUNTIME_DIR, and if that were ever unset it would fall back to a temp dir —
+# which PrivateTmp=true below makes private to the service, so `wigwag status`
+# would silently find nothing. %t is XDG_RUNTIME_DIR, which is exactly what the
+# CLI computes, so both sides agree.
+Environment=WIGWAG_STATUS_FILE=%t/wigwag/status.json
+
+# Restart if it dies. A light that fails quietly is the outcome this project is
+# built to avoid.
+Restart=always
+RestartSec=5
+
+# journald picks these up; no log files to rotate.
+StandardOutput=journal
+StandardError=journal
+
+# Light hardening. The daemon only needs loopback UDP in, a broker connection
+# out, and one status file.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+# It must still write the status file under $XDG_RUNTIME_DIR.
+ReadWritePaths=%t
+
+[Install]
+WantedBy=default.target

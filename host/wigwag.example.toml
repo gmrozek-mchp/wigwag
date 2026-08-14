@@ -1,0 +1,61 @@
+# wigwag host configuration.
+#
+# Copy to the per-platform location and edit:
+#   macOS / Linux   ~/.config/wigwag/config.toml   (or $XDG_CONFIG_HOME/wigwag/)
+#   Windows         %APPDATA%\wigwag\config.toml
+# Or point WIGWAG_CONFIG at any path.
+#
+# Every value here is optional — the defaults are a working local setup, so with no
+# config file at all wigwagd talks to a broker on localhost:1883 without TLS.
+# Check what is actually in effect with:  uv run wigwag config
+
+[broker]
+# --- Local broker (the default) --------------------------------------------------
+host = "localhost"
+# port defaults to 1883 without TLS, 8883 with it.
+# port = 1883
+
+# TLS is inferred from `host` when unset: OFF for loopback, ON for anything else.
+# Setting it false for a remote host is allowed but wigwagd will warn loudly,
+# because it means credentials and session activity cross the network in the clear.
+# tls = false
+
+# --- Remote / hosted broker ------------------------------------------------------
+# Point at a broker on the LAN, a VPS, or a managed service. TLS switches itself on
+# automatically for any non-loopback host.
+#
+# host = "mqtt.example.com"
+# port = 8883
+# tls = true
+# ca_cert = "/etc/ssl/certs/ca-certificates.crt"   # omit to use the system store
+#
+# Only for a broker with a self-signed certificate you cannot add to the trust
+# store. This encrypts but does not authenticate, so it does not protect against
+# interception — wigwagd warns when it is on.
+# insecure_skip_verify = false
+
+username = ""
+# Prefer the WIGWAG_MQTT_PASSWORD environment variable over putting a password in
+# this file. Anything here is a plaintext secret on disk.
+password = ""
+
+# Distinct per host if you run several wigwag daemons against one broker, or the
+# broker will disconnect them in a loop as they fight over the client id.
+client_id = "wigwagd"
+keepalive = 30
+
+[topics]
+# All topics live under this prefix: <prefix>/state, <prefix>/button, ...
+# Change it to run two independent lights on one broker.
+prefix = "wigwag"
+
+[daemon]
+# Where hook clients send their datagrams. Loopback only by design — nothing
+# off-machine should be able to drive the light.
+listen_host = "127.0.0.1"
+listen_port = 9410
+
+# A session that has not reported for this long stops voting, so a crashed session
+# cannot wedge the light red forever. Longer than any plausible single tool call,
+# short enough to recover unattended. See ADR-0004.
+session_ttl = 900

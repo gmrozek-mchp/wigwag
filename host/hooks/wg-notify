@@ -1,0 +1,67 @@
+#!/bin/sh
+# wg-notify — report a session state to wigwagd. Runs inside Claude Code's hook path.
+#
+# Usage:  wg-notify SET <STATE> [reason]
+#         wg-notify DROP
+# Hook JSON arrives on stdin; session_id is extracted from it.
+#
+# RULE 3 (CLAUDE.md): this must never break Claude Code. Therefore:
+#   * always exit 0, whatever happens;
+#   * write NOTHING to stdout — on UserPromptSubmit stdout is injected into the
+#     model's context, and on SessionStart it is shown to the user;
+#   * write nothing to stderr either, so a stopped daemon never produces noise;
+#   * no dependency on the daemon being up.
+#
+# Deliberately uses no jq, sed, nc, python or node (ADR-0010). Bash's /dev/udp
+# needs no external binary, and UDP sendto cannot block or fail when nothing is
+# listening — so the fire-and-forget guarantee is structural, not careful coding.
+# Measured at ~3 ms median.
+#
+# Portability: Claude Code runs hooks under bash (Git Bash on Windows), and
+# /dev/udp is a bash/ksh feature, not POSIX. A PowerShell equivalent lives beside
+# this file for Windows installs without Git Bash.
+
+# Loopback only: this is local IPC.
+host="${WIGWAG_HOST:-127.0.0.1}"
+port="${WIGWAG_LISTEN_PORT:-9410}"
+
+verb="$1"
+[ -n "$verb" ] || exit 0
+
+# Read the first line of hook JSON. Claude Code sends compact single-line JSON, so
+# one read is enough; if that ever changes we degrade to session_id=unknown rather
+# than hanging or failing.
+line=""
+read -r line 2>/dev/null
+
+case "$line" in
+	*'"session_id":"'*)
+		session_id="${line#*\"session_id\":\"}"
+		session_id="${session_id%%\"*}"
+		;;
+	*)
+		session_id="unknown"
+		;;
+esac
+[ -n "$session_id" ] || session_id="unknown"
+
+case "$verb" in
+	SET)
+		state="$2"
+		[ -n "$state" ] || exit 0
+		reason="${3:-unspecified}"
+		msg="SET $state $session_id $reason"
+		;;
+	DROP)
+		msg="DROP $session_id"
+		;;
+	*)
+		exit 0
+		;;
+esac
+
+# The subshell keeps the shell's own redirection-failure message off stderr; a bare
+# `2>/dev/null` on the redirect does not suppress it.
+( printf '%s\n' "$msg" > "/dev/udp/$host/$port" ) 2>/dev/null
+
+exit 0

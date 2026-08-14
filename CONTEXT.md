@@ -40,12 +40,24 @@ There are exactly four states. They are named in code and on the wire in **upper
   the lamps with the amber flicker.
 - **fail-visible** — the governing principle: when the device cannot know the state, it must
   *look* wrong rather than display a stale state confidently. See ADR-0007.
-- **producer** — anything that reports state. Today: Claude Code hooks, and the CLI push API.
-- **hook client** — `host/hooks/wg-notify`, the sub-10 ms script Claude Code executes.
+- **producer** — anything that reports state. Today: Claude Code hooks and the CLI push API.
+  The daemon cannot tell producers apart; they all speak the same wire protocol.
+- **hook client** — `host/hooks/wg-notify`, the ~3 ms shell script Claude Code executes. Uses
+  bash's `/dev/udp`; no `jq`, `sed`, `nc`, Python or Node in the hook path (ADR-0010).
 - **daemon** — `wigwagd`. Owns the session table and is the only MQTT publisher of state.
 - **push API** — the generic path (`wigwag set …`) letting non-Claude producers drive the light.
+- **coalescing** — suppressing a publish when the aggregate has not meaningfully changed. Keyed
+  on `state` and session count, deliberately **not** on `reason`, since `PreToolUse` and
+  `PostToolUse` differ only in reason and would otherwise republish twice per tool call.
 - **footprint budget** — the 8 KB SRAM ceiling on the target part. A gated requirement measured
   with `west build -t ram_report`, not an aspiration. See ADR-0008.
+- **commissioning** — getting a device its Wi-Fi credentials *and* its broker configuration for
+  the first time. Two separate problems: the module's provisioning service handles Wi-Fi, nothing
+  yet handles the broker. v1 is compile-time; v1.1 is SoftAP provisioning. See ADR-0012.
+- **provisioning mode** — the temporary state entered by long-pressing the button, in which the
+  module runs as a Soft-AP and serves its provisioning service. Signalled by all three lamps
+  cycling in sequence — a pattern used nowhere else, so it cannot be mistaken for `WAIT` or the
+  amber link-lost flicker. Not a `state` and not a `link condition`; a distinct operating mode.
 
 ## Wire protocol
 
@@ -58,6 +70,24 @@ There are exactly four states. They are named in code and on the wire in **upper
 
 `reason` is free-form diagnostic text (usually the hook that caused the change). Never switch
 behavior on `reason`; only on `state`.
+
+The device also publishes nothing about the host; `wigwag/host_online` (`1`/`0`, retained, `0`
+as the daemon's Last Will) is the host's own liveness marker.
+
+### Hook → daemon protocol
+
+Between the hook client and the daemon, over **loopback UDP** (default `127.0.0.1:9410`) —
+not a Unix socket, because AF_UNIX datagrams do not exist on Windows and bash's `/dev/udp`
+cannot address them (ADR-0010). One line per datagram, so `printf` can produce it:
+
+```
+SET <STATE> <session_id> [reason]
+DROP <session_id>
+PING
+```
+
+Parsing is **total**: malformed input becomes a logged-and-dropped value, never an exception.
+The sender is a hook that cannot see our errors and must not be affected by them.
 
 ## Hardware names
 

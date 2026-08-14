@@ -7,6 +7,189 @@ Entries record what was done, why, and — importantly — what was tried and re
 
 ---
 
+## 2026-08-14 — Phase 1 host software: daemon, CLI, hook client, 93 tests
+
+Branch `phase1/host-software`.
+
+**Done**
+- `host/` is a **uv** project (`pyproject.toml`, `uv.lock`), Python 3.11+, one runtime dep
+  (`paho-mqtt`) imported lazily so the pure logic and the whole test suite need nothing installed.
+- `wigwagd`: loopback UDP listener → per-session store with TTL → priority aggregation →
+  retained MQTT publish. Modules split so the core is I/O-free and clock-injected:
+  `state.py`, `protocol.py`, `config.py`, `listener.py`, `publisher.py`, `daemon.py`, `paths.py`.
+- `wigwag` CLI: `set`, `clear`, `status`, `watch`, `config` — the generic push API (D36).
+- `host/hooks/wg-notify`: the hook client, shell + bash `/dev/udp`. **2.9 ms median, 3.7 ms p95.**
+  Plus `wg-notify.ps1` for Windows without Git Bash.
+- `host/settings.hooks.json` (hook wiring, exec form), `wigwag.example.toml`, `host/README.md`.
+- **93 tests passing**, including 9 integration tests that run the *real* shell client over
+  *real* loopback UDP against a live listener.
+- ADR-0010 (cross-platform + UDP hook client), ADR-0011 (configurable broker, TLS policy).
+
+**Why**
+- Cross-platform and "local or outside MQTT server" were added as requirements, and both
+  invalidated parts of the plan — see below.
+- Config is layered defaults → TOML → env, so the zero-config case is a working local setup.
+  TLS **infers on** for any non-loopback broker: changing one config line to a remote host must
+  not silently start shipping credentials and session activity in the clear. Explicit plaintext
+  is still allowed but warns loudly (Rule 4 applied to configuration).
+
+**Tried and rejected**
+- **AF_UNIX datagram socket** (the original plan's transport). Windows has no AF_UNIX *datagram*
+  support, and bash's `/dev/udp` cannot address Unix sockets either — so it would also have
+  ruled out the fast hook client. Replaced with loopback UDP.
+- **`sh` + `nc`** (the original plan's client). `nc` is absent from Git Bash on Windows, and its
+  flags differ across BSD netcat, GNU netcat and `ncat`. Replaced with bash `/dev/udp`, which
+  needs no external binary at all.
+- **Python hook client.** One implementation everywhere, but 30–50 ms of interpreter start-up on
+  a script that runs on every tool call. Rejected on cost.
+- **PowerShell as the primary Windows client.** 100–300 ms start-up, and unnecessary since Claude
+  Code uses Git Bash by default. Demoted to a documented fallback.
+- **Go/Rust compiled client.** Genuinely good — same ~3 ms, no runtime dep. Rejected because
+  bash already hits that latency with zero build step, and a compiler toolchain is real cost in a
+  repo already carrying Zephyr, KiCad and OpenSCAD. Pre-analysed as the fallback in ADR-0010.
+- **A bare `2>/dev/null` on the `/dev/udp` redirect.** Does *not* suppress the shell's own
+  redirection-failure message, so a stopped daemon leaked `connect: Operation not permitted` to
+  stderr — which `SessionEnd` shows to the user. Fixed by wrapping the redirect in a subshell.
+  Found by testing the daemon-down path, not by reading the script.
+- **Coalescing on the full aggregate including `reason`.** Looked right, and the test suite caught
+  it: `PreToolUse` and `PostToolUse` differ only in reason, so every tool call republished the
+  retained message twice — precisely the burst coalescing exists to prevent. Now keyed on
+  `state` + session count only (D54).
+- **`PING` triggering a publish.** A liveness probe must not be able to cause broker traffic.
+
+**Verified**
+- Hook client latency: **2.9 ms median / 3.7 ms p95** over 30 runs. A test asserts median < 50 ms
+  as a regression guard against reintroducing an interpreter.
+- Rule 3 holds in every case tested: exit 0, empty stdout, empty stderr — with the daemon down,
+  with junk on stdin (`""`, `not json`, `{}`, `{"session_id":}`), and with an unknown verb.
+- `/bin/sh` on macOS is **bash 3.2.57**, so `/dev/udp` is available where hooks run.
+- **No `CLAUDE_SESSION_ID` env var exists** — only `CLAUDE_PROJECT_DIR`, `CLAUDE_PLUGIN_ROOT`,
+  `CLAUDE_PLUGIN_DATA`, `CLAUDE_EFFORT`, `CLAUDE_CODE_REMOTE`, `CLAUDE_CODE_BRIDGE_SESSION_ID`.
+  So `session_id` must come from stdin JSON; that is why the client parses at all.
+- Claude Code runs hooks under **bash on all platforms** (Git Bash on Windows, PowerShell only as
+  fallback) — the fact the whole client design rests on.
+- Live smoke test with `--dry-run`: two producers (a hook session and a `ci` CLI producer),
+  `WAIT` correctly held while CI reported `BUSY`, fell back to `BUSY` when the session hit `Stop`,
+  then to `IDLE` when CI was cleared. No duplicate publishes.
+
+**Verified against a real broker**
+Installed `mosquitto` via brew *without* registering it as a service (run on demand).
+
+- Full publish path: `IDLE → BUSY → WAIT → IDLE` observed arriving at the broker via
+  `mosquitto_sub -t 'wigwag/#' -v`, plus `host_online 1` on connect.
+- **Retained messages behave as ADR-0003 requires** — the load-bearing claim of the whole
+  transport choice. A *fresh* subscriber (i.e. the device booting after the fact) immediately
+  receives `{"state":"WAIT",...}` with no host involvement, and repeatedly, not one-shot.
+- **Last Will fires on an unclean death**: SIGKILL → `host_online 0`. Clean SIGTERM also
+  publishes `0`.
+- **The retained state survives the daemon's death**, which is exactly *why* the device must
+  fail-visible on link loss (ADR-0007): the broker keeps serving a state whether or not anything
+  is still producing it. Seeing that directly makes ADR-0007 feel less like caution and more like
+  a requirement.
+- **Hook block merged into `.claude/settings.json`, and this session now drives the light.**
+  `wigwag status` shows this session's own id (`0fec7bb8-…`) as a live session in `BUSY` from
+  `PreToolUse`. Real hooks → real bash client → real daemon → real broker.
+
+**A test bug worth recording, since it nearly became a false bug report**
+The first Last Will test showed `host_online 1` after SIGKILL, which looked like a broken will.
+It was a flawed test: `kill -9 $!` killed the `uv run` *wrapper* and orphaned the Python child,
+so the MQTT connection stayed open and the will correctly did not fire. `pgrep -fl` exposed the
+survivor. Re-run against the real process, both SIGKILL and SIGTERM produce `0`.
+Lesson: `uv run` is a wrapper — for signal-handling tests, exec the interpreter directly
+(`.venv/bin/python -m wigwagd`) so `$!` is the process under test.
+
+**Open**
+- **`WAIT` has not been observed live** — it needs a real permission prompt. Covered by unit and
+  integration tests, but not yet seen arriving from an actual `Notification` hook.
+- **Windows is untested.** Portable by construction, but unrun. Stated in ADR-0010 rather than
+  glossed over.
+- Device-side TLS with Trust&Go remains future work.
+- `mosquitto` runs on demand, not as a service, so the light only works while it is started.
+  Worth revisiting once the device exists and this becomes daily-use rather than a test.
+
+**Cross-platform operator documentation**
+Rewrote `host/README.md` as a runbook covering macOS, Linux and Windows: prerequisites,
+start-everything, broker install/run/service per platform, remote broker with TLS,
+autostart at login, config reference, and a troubleshooting table. Root `README.md` gained a
+getting-started section pointing at it. Added `host/deploy/` with a mosquitto config, a
+launchd plist and a systemd user unit.
+
+**The trap that would have cost hours later**
+`mosquitto` 2.x with no config file **starts in "local only mode" and refuses every
+connection not from the same machine.** Verified: a LAN publish to this host's own IP was
+refused, and the broker log says so outright — *"Starting in local only mode… Create a
+configuration file which defines a listener to allow remote access."*
+
+This is insidious because it does not affect host development at all: `wigwagd` connects over
+loopback and everything looks correct. It breaks only when the **device** tries to connect
+over Wi-Fi, at which point the symptom is "the light never connects" with a working daemon.
+Documented prominently in both READMEs and fixed by `deploy/mosquitto-wigwag.conf`.
+
+Verified the fix rather than assuming it: `listener 1883` + `allow_anonymous true` → LAN
+publish OK; `allow_anonymous false` + `password_file` → anonymous refused, authenticated OK;
+and `wigwagd` connects to that authenticated broker over the LAN and publishes a retained
+message. ADR-0011's plaintext warning fired for real in that last test, which was pleasing.
+
+**Verified in the deploy files** — because shipping a config file is not the same as it working:
+- `plutil -lint` clean on the launchd plist; the `sed` one-liner in the README leaves zero
+  placeholders and the resulting interpreter path exists and runs.
+- The systemd unit parses. Note `configparser` chokes on systemd's `%t` specifier unless
+  interpolation is disabled — that was my *test script's* bug, not the unit's.
+- Pinned `WIGWAG_STATUS_FILE=%t/wigwag/status.json` in the systemd unit. Without it the
+  daemon derives the path from `XDG_RUNTIME_DIR`, and if that were unset it would fall back
+  to a temp dir that `PrivateTmp=true` makes private to the service — so `wigwag status`
+  would silently find nothing. `%t` is what the CLI computes, so both sides now agree.
+- **Not** verified: the systemd unit on real Linux (`systemd-analyze` unavailable on macOS),
+  and the Windows Task Scheduler steps. Both marked ⚠️ in a table in `host/README.md` rather
+  than implied to work.
+
+**Commissioning captured (ADR-0012) — it was only a passing line in the plan**
+Raised as "how will we commission the wigwag — USB, Wi-Fi, Bluetooth, other?" The plan had one
+line ("credentials via Kconfig for v1") and a vague future-directions note. It needed a real
+decision, because it **constrains the PCB** and therefore had to be settled before Phase 3.
+
+- **USB commissioning is impossible on this MCU.** PL10's peripheral summary (Table 8-1) lists
+  SERCOM0/1, TC0/1/2, TCC0, ADC, AC, CCL, PTC, DMAC, EVSYS, RTC, WDT and so on — **no USB
+  peripheral**. It would take an MCP2221A bridge, D+/D− routing, ESD, and reversing D24
+  (USB-C power-only). Recorded as D57 because this is precisely the kind of thing that is free
+  to decide now and a respin to discover later.
+- **Bluetooth is out**: RNWF02 is Wi-Fi only (its PTA is for coexisting with an *external* BT
+  radio) and PL10 has no radio.
+- **RNWF02's provisioning support is much better than I assumed** — this is the find that made
+  the decision easy. It has Soft-AP, an `AT+WPROV` **provisioning socket**, and a provisioning
+  service that *"implements or handles all the required AT commands to start the module in
+  Access Point mode and open up a TCP tunnel or serve a HTML web page to receive the Wi-Fi
+  credentials."* Completion hands back `[Mode, SSID, Passphrase, Security, Autoenable]`. There
+  is a **Microchip Wi-Fi Provisioning mobile app** and a `wifi_easy_config` reference demo.
+  So the module serves the page and parses credentials; the host only sends AT commands — which
+  is the only reason this fits in 8 KB.
+- **Decision:** v1 compile-time Kconfig (fastest to a working light), v1.1 SoftAP provisioning
+  triggered by a long-press on the button we already have, with all three lamps cycling so the
+  mode cannot be confused with `WAIT` or the amber flicker.
+
+**The distinction I nearly missed:** commissioning is *two* problems, not one — Wi-Fi credentials
+**and** broker configuration. The module's provisioning service only knows about Wi-Fi. The broker
+config has no path yet, so it stays compile-time even in v1.1 until the `AT+WPROV` socket is
+extended. Logged as **D60, still open**, rather than quietly assumed solved.
+
+**What this buys the PCB:** nothing new on the BOM. Break out the host UART (SERCOM0) to pads,
+keep the button on an interrupt-capable GPIO, keep module `MCLR` under host control, keep the
+`UART2_TX` debug pad. All pin assignments, all free now.
+
+Noted but not binding: the EU **RED Delegated Act** has applied since 2025-08-01 to
+network-connected radio equipment — no default passwords, secure credential storage,
+authenticated updates. Microchip's own guidance says its RNWF02 reference apps ship with default
+passwords that a product must remove. Irrelevant for a personal device, but commissioning is
+where that work would land, and "provisioning AP with no password" would fail first.
+
+**Next**
+Phase 2 — starting with the **D49 TCC PWM spike**, which gates the PCB: get `pwm_mchp_tcc_g1`
+bound to PL10 via devicetree and prove it with a breathing LED on an `EV10P22A`. Worth pairing it
+with a provisioning-service spike on the same hardware, since both are RNWF02/Zephyr unknowns and
+both feed the layout.
+
+---
+
 ## 2026-08-14 — Project scoped, named, and Phase 0 documentation built
 
 **Done**
