@@ -182,11 +182,50 @@ authenticated updates. Microchip's own guidance says its RNWF02 reference apps s
 passwords that a product must remove. Irrelevant for a personal device, but commissioning is
 where that work would land, and "provisioning AP with no password" would fail first.
 
+**Broker auto-discovery investigated and rejected (ADR-0013), resolving D60**
+Asked whether any auto-discovery mechanism exists for MQTT brokers. There is a real standard —
+DNS-SD with registered service names `_mqtt._tcp` (1883) and `_secure-mqtt._tcp` (8883) — but
+**neither end of this system speaks it**, and I verified both rather than assuming:
+
+- **RNWF02 has no mDNS.** Network features are listed identically in the datasheet and the sell
+  sheet: TCP, UDP, DHCP, ARP, HTTP, MQTT, IPv4/IPv6, TLS 1.2, DNS, SNTP. No mDNS, no Zeroconf.
+- **mosquitto does not advertise.** Zero mDNS/avahi symbols in the installed binary, nothing in
+  its usage output, and a live `dns-sd -B _mqtt._tcp local` browse on this LAN returned nothing.
+
+Two naming collisions worth keeping straight, because both nearly misled me:
+- Microchip's **Harmony 3 TCP/IP Library** *does* have `TCPIP_MDNS_ServiceRegister` and Zeroconf
+  link-local support — but that is the host-side stack for parts like PIC32MZ that run their own
+  IP stack. It is not RNWF02 module firmware and is not reachable over the AT interface.
+- **Home Assistant "MQTT discovery"** is a device describing *itself* to HA once connected —
+  not broker discovery. It is the thing people usually mean by "MQTT auto-discovery", and it is
+  a plausible future feature, but it does not answer this question.
+
+So mDNS would mean hand-rolling DNS-SD packet construction and parsing over a raw UDP socket in
+8 KB, *plus* separately advertising the broker — to save typing one hostname.
+
+**The find that settled it: `AT+CFGCP`.** Configuration Storage/Retrieval, added in RNWF02
+firmware v3.0 — AT command configurations can be *"archived to non-volatile storage for later
+retrieval… the commands re-played upon retrieving."* Since MQTT is configured *by* AT commands,
+the module can persist **broker config, not just Wi-Fi**. Configuration becomes a once-ever
+event, not once per boot, which removes most of the motivation for discovery. Recorded as D62,
+with a note to verify the module ships firmware ≥ v3.0 at Phase 2 bring-up.
+
+Decision: broker address is **entered during provisioning and persisted**, defaulting to a
+**hostname rather than an IP** so it survives DHCP lease changes via router-registered local DNS.
+
+Also rejected, with reasons in the ADR: a UDP broadcast beacon from `wigwagd` (trivially
+spoofable, and it would make the device depend on a live host to find its broker — undermining
+the independence retained messages buy), DHCP options, DNS SRV, fixed `.local` names, QR codes,
+cloud rendezvous, and probing a candidate list. That last one is the worst option available: on a
+shared network it could silently connect to someone else's broker, producing exactly the
+confidently-wrong behaviour ADR-0007 exists to prevent.
+
 **Next**
 Phase 2 — starting with the **D49 TCC PWM spike**, which gates the PCB: get `pwm_mchp_tcc_g1`
 bound to PL10 via devicetree and prove it with a breathing LED on an `EV10P22A`. Worth pairing it
 with a provisioning-service spike on the same hardware, since both are RNWF02/Zephyr unknowns and
-both feed the layout.
+both feed the layout — and while there, record the module's firmware version to confirm
+`AT+CFGCP` is available (D62).
 
 ---
 

@@ -173,7 +173,10 @@ FET selection: logic-level N-channel, Vgs(th) low enough to fully enhance at 3.3
 | **D57** | **USB commissioning is impossible** — PL10 has no USB peripheral (Table 8-1). Would need an MCP2221A bridge and would reverse D24 | settled |
 | **D58** | Long-press the existing button enters provisioning mode; all three lamps cycle so the mode is unmistakable | settled |
 | **D59** | PCB must break out host UART (SERCOM0) to pads/header — bench commissioning at zero BOM cost | settled |
-| **D60** | **Broker config commissioning is unsolved**; stays compile-time even in v1.1 until the `AT+WPROV` socket is extended | open |
+| **D60** | **Broker address is configured during provisioning, not auto-discovered** (ADR-0013) | settled |
+| **D61** | **mDNS/DNS-SD `_mqtt._tcp` rejected** — RNWF02 has no mDNS and mosquitto does not advertise (both verified) | settled |
+| **D62** | **`AT+CFGCP` persists config to module NVM** (firmware v3.0+), so broker settings survive reboots and are entered once ever | settled |
+| **D63** | Broker field defaults to a **hostname**, not an IP — survives DHCP lease changes via router-registered local DNS | settled |
 | D36 | Generic push API (`wigwag set …`) for CI, PR bots, cron | settled |
 | D37 | Credentials in gitignored `firmware/credentials.conf` + `host/.env` | settled |
 | **D47** | **Works identically in the VS Code extension and the terminal** — hooks are a CLI-level feature and the extension bundles the CLI, so one implementation covers both | settled |
@@ -404,7 +407,7 @@ Debuggers already on hand (PICkit 5, PICkit Basic, Atmel-ICE, J-Link) all work v
 | # | Question | Assumption if unanswered |
 |---|---|---|
 | D29 | *Resolved* — TLS is automatic off-loopback (ADR-0011). Device-side TLS with Trust&Go remains future work. | — |
-| D60 | How does the *broker* config get commissioned, not just Wi-Fi? | Compile-time via Kconfig; extend the `AT+WPROV` socket in v1.1 |
+| — | Is module firmware **v3.0+** (needed for `AT+CFGCP`)? | Assume yes; **verify at Phase 2 bring-up** and record the version in the journal |
 | — | Does the RNWF02 provisioning service behave as documented? | Assume yes; **Phase 2 spike** alongside D49 |
 | D17 | Install hooks into `.claude/settings.json`? | Yes, project-local, journal reminder now and state hooks in Phase 1 |
 
