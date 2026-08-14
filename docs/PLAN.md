@@ -200,6 +200,9 @@ FET selection: logic-level N-channel, Vgs(th) low enough to fully enhance at 3.3
 | **D69** | **Run `pyocd pack update` before `pack install`** — pyOCD resolves versions from a cached index it never refreshes, and DFP 1.4.418 faults on every connect where 1.5.437 works | settled |
 | **D71** | **No dependency on MPLAB X or `ipecmd`.** pyOCD is the only supported flashing path: `west` + Zephyr SDK + pyOCD, DFP from the public CMSIS index, no vendor IDE required. Verified by a full erase/program round trip | settled |
 | **D70** | **The lamp renderer schedules on absolute deadlines, not `k_msleep`** — measured 1297 ms against an intended 1250 ms, drift by construction | settled |
+| **D72** | **The cnano's LED0 is active low**, so the dev-board overlay uses `PWM_POLARITY_INVERTED`. Mainline's board dts says `GPIO_ACTIVE_HIGH` — an upstream bug. **The PCB is active high** (low-side FETs, D26), so `lamp.c` must take polarity from devicetree, never inherit the board's | settled |
+| **D73** | **Local patch to the pinned tree**: mainline's `microchip,{tc,tcc}-g1-pwm.yaml` name the third `pwm-cell` `polarity`, so `PWM_DT_SPEC_GET()` silently discards polarity. Fixed in `firmware/patches/`, to be upstreamed (ADR-0006 rung b) | settled |
+| **D74** | **The firmware prints its resolved PWM flags at boot**, because a devicetree value that is silently ignored is otherwise invisible | settled |
 
 ---
 

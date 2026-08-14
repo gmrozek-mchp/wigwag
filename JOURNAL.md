@@ -7,6 +7,98 @@ Entries record what was done, why, and — importantly — what was tried and re
 
 ---
 
+## 2026-08-14 — The lamp was inverted, and two upstream bugs were hiding behind each other
+
+Chasing SERCOM0 pin assignments in the Curiosity Nano user guide turned up something that
+invalidated part of what I had already recorded as verified, so it took priority.
+
+**Bug one: the cnano's LED0 is active low, and mainline says it is active high**
+The board user guide is explicit — Table 4-1 lists LED0 as "active low" and §4.1 says "driving the
+connected I/O line to GND will activate the LED". Mainline's `pic32cm_pl10_cnano.dts` declares
+`gpios = <&portb 2 GPIO_ACTIVE_HIGH>`.
+
+I had reported "LED0 breathes" as D49's verification without ever establishing polarity, because
+**neither blinky nor a symmetric fade can distinguish it** — an inverted triangle is still a
+triangle. What distinguishes it is the *cubic* gamma curve, which parks the duty cycle near zero
+for most of the cycle: active-high should look mostly dark with a brief bright peak, active-low the
+inverse. Observed on hardware: **mostly lit, with a brief dark dip.** Active low, confirmed, and
+our lamp had been running inverted the whole time.
+
+Consequence recorded as D72: the overlay now sets `PWM_POLARITY_INVERTED`, but **only for the dev
+board** — the PCB drives its lamps through low-side N-FETs (D26, ADR-0009) where a high gate lights
+the lamp, so `lamp.c` must read polarity from devicetree and never inherit the cnano's.
+
+**Bug two, found because the fix did not work**
+Setting `PWM_POLARITY_INVERTED` changed the generated devicetree —
+`pwms = <&tcc0 0x2 0x1e8480 0x1>` — and then **pyOCD reported the freshly built image as
+byte-identical to the one already on the device.** I dismissed that as a pyOCD reporting quirk. It
+was the actual evidence: a devicetree change that cannot alter the binary is a devicetree change
+nothing reads.
+
+Root cause: Zephyr resolves PWM flags with
+
+    #define DT_PWMS_FLAGS_BY_IDX(node_id, idx) DT_PHA_BY_IDX_OR(node_id, pwms, idx, flags, 0)
+
+which looks for a cell named **`flags`** and **defaults to 0 when it is absent**. Mainline's
+`microchip,{tc,tcc}-g1-pwm.yaml` name their third `pwm-cells` entry **`polarity`**. So
+`PWM_DT_SPEC_GET()` silently discarded the polarity — no warning, no error, and
+`PWM_POLARITY_INVERTED` in a `pwms` cell simply did nothing.
+
+Checked rather than assumed that `flags` is the convention: **52 of the in-tree PWM bindings use
+`channel, period, flags`.** These two Microchip bindings are the only outliers, so it is a naming
+slip, not an interface choice. One-line fix in `firmware/patches/`, to be upstreamed — ADR-0006's
+rung (b), the first time this project has needed it. `firmware/patches/README.md` documents
+re-application, since `west update` reverts it silently.
+
+**Verified**
+- Before the patch: `wigwag: polarity flags 0x0 (normal, active-high lamp)`.
+- After: `wigwag: polarity flags 0x1 (inverted, active-low lamp)`, and the flash write covered
+  6 656 bytes across 13 sectors — the binary changed, where the devicetree-only change had not.
+
+**The lesson worth keeping:** a devicetree property that is silently ignored is invisible. The
+firmware now prints its resolved PWM flags at boot (D74), which is four lines of code and would
+have caught this in seconds instead of via a flash-size anomaly.
+
+**Also learned along the way**
+- **`pyocd flash -e chip` faults on this part** — `FlashEraseChip` dies with `FAULT ACK` even with
+  DFP 1.5.437, after erasing. It left the device blank and needed a sector-erase reflash to
+  recover. Use `-e sector`, which is what the board's own `board.cmake` specifies anyway.
+- The TCC driver only ever *sets* `DRVCTRL.INVENx` and never clears it, so polarity is effectively
+  one-way per boot. Harmless for a fixed assignment; a trap for anything that flips polarity at
+  runtime.
+- SERCOM0 pin choice for the module UART is settled by elimination: the debugger holds PB00/PB01
+  (CDC), PA20 (SWDIO), PA31 (SWCLK), PB03 (SW0), PA30 (RESET); PA24/PA25 are the crystal footprint;
+  PB08/PB09 the touch button; and **PA08–PA15 are MVIO**, powered from VDDIO2. That leaves
+  **PA04 = SERCOM0 PAD0 (TX), PA05 = PAD1 (RX)**, mux C — outside the MVIO domain and clear of
+  everything else.
+
+**Confirmed by eye, and it validates the gamma choice**
+After the fix the lamp fades "very smooth in brightness change up and down, no prolonged time at any
+brightness". That is the *correct* result and it is worth understanding why, because I predicted the
+wrong thing.
+
+I had expected correct polarity to look "mostly dim with a brief bright peak". That was reasoning
+about how long the **duty cycle** sits near zero — which is true — while ignoring that perceived
+brightness is roughly the cube root of duty. With `duty = level³` the two cancel: perceived
+brightness tracks `level` almost linearly, so a triangle in `level` produces a triangle in
+*perceived* brightness — an even fade with no dwell. That cancellation is the entire purpose of the
+gamma correction, so predicting a skewed appearance contradicted the code I had just written.
+
+The polarity conclusion never depended on it. That rests on the earlier observation, which is
+airtight: with `flags = 0` the active level is HIGH, the gamma curve keeps duty near zero for most of
+the cycle so the pin is LOW most of the time, and the lamp was observed **lit** most of the time.
+Lit when low is active low.
+
+So two things are now established rather than assumed: the lamp polarity, and that a cubic curve is
+a good enough perceptual correction for a diffused lamp on this hardware — measured by eye instead of
+taken from a table. `lamp.c` can keep the integer cube.
+
+**Open**
+- D49 stands as a PWM-enablement result — TCC0 works, 500 Hz on a scope — and its lamp evidence is
+  now polarity-aware rather than polarity-blind.
+
+---
+
 ## 2026-08-14 — End-to-end: the real AT client against a real broker, no hardware
 
 **Done**

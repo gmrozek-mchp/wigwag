@@ -1,0 +1,20 @@
+diff --git a/dts/bindings/pwm/microchip,tc-g1-pwm.yaml b/dts/bindings/pwm/microchip,tc-g1-pwm.yaml
+index 1481aa4c8..a61e154dc 100644
+--- a/dts/bindings/pwm/microchip,tc-g1-pwm.yaml
++++ b/dts/bindings/pwm/microchip,tc-g1-pwm.yaml
+@@ -40,4 +40,4 @@ properties:
+ pwm-cells:
+   - channel
+   - period
+-  - polarity
++  - flags
+diff --git a/dts/bindings/pwm/microchip,tcc-g1-pwm.yaml b/dts/bindings/pwm/microchip,tcc-g1-pwm.yaml
+index b02f32fd3..3f0ac2a23 100644
+--- a/dts/bindings/pwm/microchip,tcc-g1-pwm.yaml
++++ b/dts/bindings/pwm/microchip,tcc-g1-pwm.yaml
+@@ -28,4 +28,4 @@ properties:
+ pwm-cells:
+   - channel
+   - period
+-  - polarity
++  - flags

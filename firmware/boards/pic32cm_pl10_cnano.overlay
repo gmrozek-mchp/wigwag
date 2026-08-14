@@ -46,12 +46,32 @@
 
 	/*
 	 * One lamp channel for the spike. On the PCB this becomes three (D46: WO0/WO1/WO2).
+	 *
+	 * PWM_POLARITY_INVERTED, because **the Curiosity Nano's LED0 is active low** — its user
+	 * guide §4.1 says "driving the connected I/O line to GND will activate the LED", and
+	 * Table 4-1 lists it as "active low". Without the inversion, duty means darkness and the
+	 * lamp reads backwards.
+	 *
+	 * Note that mainline's board devicetree disagrees: pic32cm_pl10_cnano.dts declares
+	 * led0 as GPIO_ACTIVE_HIGH. That is an upstream bug — blinky and a symmetric fade both
+	 * look identical either way, which is presumably how it survived. Confirmed on hardware by
+	 * the asymmetry of the cubic gamma ramp: with NORMAL polarity the lamp sat lit with a brief
+	 * dark dip, the exact inverse of the intended breath.
+	 *
+	 * **This cell does nothing without firmware/patches/0001-*.patch applied.** Mainline's
+	 * microchip,tcc-g1-pwm.yaml names its third pwm-cell "polarity", while Zephyr resolves
+	 * flags via DT_PHA_BY_IDX_OR(..., flags, 0) — so an unpatched tree silently discards this
+	 * value. main.c prints the resolved flags at boot for exactly that reason.
+	 *
+	 * **This inversion is specific to the dev board.** The PCB drives its lamps through
+	 * low-side N-FETs (D26, ADR-0009), where a high gate turns the lamp on — so the product is
+	 * active high and lamp.c must take polarity from devicetree rather than inherit this.
 	 */
 	pwmleds {
 		compatible = "pwm-leds";
 
 		lamp_yellow: lamp_yellow {
-			pwms = <&tcc0 2 PWM_USEC(2000) PWM_POLARITY_NORMAL>;
+			pwms = <&tcc0 2 PWM_USEC(2000) PWM_POLARITY_INVERTED>;
 		};
 	};
 

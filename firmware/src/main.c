@@ -57,6 +57,11 @@ static uint32_t breathe_level(uint32_t step)
  * closely enough for a diffused lamp and costs a couple of 32-bit multiplies — no powf(), no
  * soft-float library pulled into a 64 KB part.
  *
+ * Confirmed on hardware: perceived brightness is roughly the cube root of duty, so cubing here
+ * cancels it and a linear ramp in `level` is *seen* as a linear ramp in brightness — an even fade
+ * with no dwell at either end. Worth knowing when reading a scope: the duty cycle is heavily
+ * skewed toward zero even though the light is not.
+ *
  * Dividing the period first keeps every intermediate inside 32 bits.
  */
 static uint32_t gamma_pulse(uint32_t level, uint32_t period)
@@ -84,6 +89,15 @@ int main(void)
 	printk("wigwag: %s channel %u, period %u ns, %u cycles/s (ret %d)\n",
 	       lamp_yellow.dev->name, lamp_yellow.channel, lamp_yellow.period,
 	       (uint32_t)cycles, ret);
+
+	/*
+	 * Report polarity from the devicetree spec rather than from a comment. The cnano's LED0 is
+	 * active low while mainline's board dts claims active high, so this is the one value most
+	 * likely to be wrong, and the hardest to spot by eye.
+	 */
+	printk("wigwag: polarity flags 0x%x (%s)\n", lamp_yellow.flags,
+	       ((lamp_yellow.flags & PWM_POLARITY_INVERTED) != 0) ? "inverted, active-low lamp"
+								 : "normal, active-high lamp");
 
 	while (true) {
 		ret = pwm_set_pulse_dt(&lamp_yellow,
