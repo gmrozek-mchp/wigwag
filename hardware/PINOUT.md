@@ -37,7 +37,7 @@ Pins 1–14 down one side, 15–28 up the other.
 | 2 | `PA08` | free (MVIO domain) |
 | 3 | `PA09` | free (MVIO domain) |
 | 4 | `PA10` | free (MVIO domain) |
-| 5 | `PA11` | free (MVIO domain) |
+| 5 | `PA11` | module pin 11 `Reserved` — **held tri-state in firmware** (D137). MVIO domain |
 | 6 | `VDDIO2` | **tie to 3V3** alongside `VDD` (§3.2.3, D50) |
 | 7 | `PA17` | free — standby `TCC0 WO1` |
 | 8 | `PA18` | free — standby `TCC0 WO2` |
@@ -62,7 +62,11 @@ Pins 1–14 down one side, 15–28 up the other.
 | 27 | `PA05` | module RX — `SERCOM0 PAD[1]`, mux **C**, `rxpo = 1` |
 | 28 | `PA06` | *reserved* — `SERCOM0 PAD[2]` = RTS if flow control is ever fitted (D128) |
 
-**13 signal pins + 5 power/ground = 18 of 28.** Two more held in reserve, eight genuinely free.
+**14 signal pins + 5 power/ground = 19 of 28.** Two more held in reserve, seven genuinely free.
+
+`PA11` was spent at schematic capture (D137): module pin 11 is `Reserved` but Table 2-1 note 5 says
+**"do not leave this pin unconnected"**, and the description asks for a tri-stated host I/O. A test
+point does not satisfy that. `PA11` is the cheapest pad to spend — see the swap table below.
 
 ## Why the lamps sit where they do
 
@@ -192,16 +196,24 @@ USB-C sink duties are unchanged: 5.1 kΩ CC pull-downs, and ≤ 10 µF effective
 Final placement may move any of these within its class without reopening ADR-0023. Anything not
 listed is fixed.
 
-**Placement is now settled ([`STACKUP.md`](STACKUP.md), ADR-0024) and spent none of them.** The
-package's pin order and the board's vertical zoning agree: the lamp block (pins 22/23/24) faces the
-lamp column, the module UART (pins 26–28, 1) faces the module at the top edge, and the console
-(pins 12/13) faces the bridge at the base. Every freedom below remains available to item 22.
+**Placement ([`STACKUP.md`](STACKUP.md), ADR-0024) spent none of them.** The package's pin order and
+the board's vertical zoning agree: the lamp block (pins 22/23/24) faces the lamp column, the module
+UART (pins 26–28, 1) faces the module at the top edge, and the console (pins 12/13) faces the bridge
+at the base.
+
+**Schematic capture then spent one** (D137). `PA11` now carries module pin 11, which retires the
+`PA10`+`PA11` mux-D option for the module UART, since that swap needs the pair. It was the cheapest
+of the eight: ADR-0023 rejected the module-UART MVIO swap on two independent grounds — ADR-0009
+declined to let the module link depend on `VDDIO2`, and it discards D76's continuity with the dev
+board — so it was the freedom least likely to ever be taken. Taking any single MVIO pad breaks one
+pair; taking `PA17`/`PA18` would have cost a lamp standby, and `PA24`/`PA25` are kept clear on
+purpose (D126).
 
 | Signal | May move to |
 |---|---|
 | lamp red `WO1` | `PA17` (pin 7) |
 | lamp yellow `WO2` | `PA18` (pin 8) |
 | lamp green `WO0` | **nowhere** — see above |
-| module UART | `PA10`+`PA11` mux D (pins 4/5) — *but that puts the module link in the MVIO domain* |
+| module UART | ~~`PA10`+`PA11` mux D~~ — **retired by D137**, which spent `PA11` |
 | console UART | `PA08`+`PA09` mux C (MVIO), or `PA24`+`PA25` mux D (spends `XOSC32K`) |
 | module `MCLR`, module `INTOUT`, button | any free pad; prefer one with `EXTINT` for `INTOUT` and the button |

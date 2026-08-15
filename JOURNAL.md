@@ -88,9 +88,12 @@ into item 22.
   out, and the schematics are published only as SVG/PDF images. That was the best available evidence
   for bulk-cap values (a working reference design with this exact module), and losing it is why the
   values come from the constraint envelope instead. **Retried once with the corrected GUID; timed
-  out again at 60 s.** Do not spend a third attempt through `WebFetch` — either download the
-  Add-On Board User's Guide PDF directly and read §5.1, or read the values off the physical
-  `EV72E72A` board, which is already on the shopping list and in hand.
+  out again at 60 s.** Do not spend a third attempt through `WebFetch` — download the Add-On Board
+  User's Guide PDF directly and read §5.1, or read the values off a physical `EV72E72A`.
+  **Correction: the `EV72E72A` is *not* in hand as of 2026-08-15** — it is on the shopping list,
+  unordered. That is also why **D135 and D128 are both unmeasurable today**: they need the same
+  part, and it is the long-lead item on the critical path for each of them. Ordering one board
+  unblocks both.
 - **The MCP document search returns figure callouts as unstructured text.** Page 13 arrived as
   `No Copper Region / 5.3 mm / Module PCB Edge / 15.73 mm / …` with no geometry. The 5.3 mm depth is
   stated; **15.73 mm is an inference** (module body 14.73 mm + ~0.5 mm each side) and is flagged as

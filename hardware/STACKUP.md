@@ -177,9 +177,19 @@ would otherwise allow. All three hold simultaneously only at 10 µF / 10 µF.
 | MCU `VDD`/`GND` pins 14/15 | **100 nF** | one per supply pin pair (§40.3.1) |
 | MCU `VDD`/`GND` pins 20/21 | **100 nF** | the second pair — *not* optional, and easy to drop |
 | MCU `VDDIO2` pin 6 | **100 nF** | §40.3.1.3, even tied to `VDD` (D50) |
+| Bridge `VDD` (pin 1) | **100 nF** | |
 | Bridge `VUSB` (pin 11) | **0.47 µF** | §1.6.2.2 states **0.22–0.47 µF**; 100 nF is under-spec |
 
-Total 3V3 ≈ 9.9 µF, `VBUS` 10.1 µF. Both inside every limit above.
+Total 3V3 ≈ **10.6 µF** nominal, `VBUS` ≈ **10.1 µF**. Inside the 22 µF §4.3 ceiling with wide
+margin, and `CIN` and `COUT` are equivalent — which is what §4.4 asks for ("of equivalent (or
+higher) value").
+
+**Do not read those two totals to better than about ±20 %.** X5R/X7R ceramics lose substantial
+capacitance under DC bias, so a nominal 10 µF 0805 at 5 V may deliver 6–7 µF effective; the same
+derating applies on both sides of the LDO. The 4 % difference between the two columns is far inside
+the part tolerance, and the USB ≤ 10 µF rule is likewise written against nominal/effective
+capacitance rather than a measured value. This is exactly why D135 is a measurement and not a
+calculation.
 
 ### Footprints sized so the answer can change without a respin
 
