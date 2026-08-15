@@ -3,6 +3,13 @@
 - **Status:** Accepted
 - **Date:** 2026-08-14
 
+> **Note, 2026-08-15:** the aside "USB-C on the board is power-only (D24)" below is superseded by
+> D126 — the connector now carries D+/D− to an `MCP2221A` (D102). **The constraint it was cited
+> for still holds**: PL10 has no USB device controller and a bridge cannot lend it one (D100), so
+> the device still cannot present itself as a configurable USB peripheral. What *did* change is
+> that a console over the wire became available, and D105/ADR-0019 made configuration-over-console
+> the primary path — see D56. Left as written per Rule 2.
+
 ## Context
 
 How does a wigwag get its Wi-Fi credentials and broker configuration in the first place?

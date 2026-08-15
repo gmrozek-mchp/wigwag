@@ -7,6 +7,127 @@ Entries record what was done, why, and — importantly — what was tried and re
 
 ---
 
+## 2026-08-15 — Phase 3 opens: one forced pin, and a constraint that was never real
+
+**Done** — the 28-pin pin assignment (`hardware/PINOUT.md`, **ADR-0023**, D124–D128), and plan
+item 20 reconciled against the MCP2221A. No firmware touched; no measurements to record.
+
+### The constraint that dissolved
+
+D101's finding was right and important — `PB00`–`PB03` do not exist on `PIC32CM6408PL10028`, so
+nothing from the cnano overlay transfers. But it also recorded a *problem*: the lamps and the
+console both want `PA00`–`PA02` or `PA08`–`PA11`, so one has to give, and it proposed lamps on
+`PA24`/`PA25`/`PA18` with the bridge on `PA00`/`PA01`.
+
+**That overlap does not exist.** It follows only from assuming a USART's TxD must sit on `PAD[0]`,
+and §29.6.1 is explicit that it need not: `CTRLA.TXPO = 0x1` selects `PAD[2] = TxD, PAD[3] = XCK`,
+and `RXPO` picks any of the four pads independently. So a SERCOM USART on this family has **two
+independent pin pairs, not one** — and the second pair reaches `PA22`/`PA23`, two pads with no
+`TCC0` function and no `SERCOM0` function at all. Nobody else wants them. The contention is gone
+rather than traded off, and mainline's driver writes both fields straight into `CTRLA`, so it stays
+devicetree-only (D125).
+
+This is the second time on this project that a "the silicon won't let us" claim turned out to be a
+claim about a default. Worth naming as a pattern: **when a peripheral seems to force a pin, check
+whether the pin is a property of the peripheral or of one register field.**
+
+### One pin was genuinely forced, though
+
+`TCC0 WO0` exists on exactly three pads here, and two are disqualified for reasons that are about
+this project rather than about the datasheet:
+
+- `PA08` is in the **MVIO domain**. D50 ties `VDDIO2` to `VDD`, so it would work — but the lamps
+  are the entire output of the device, and making them contingent on a second rail sequencing
+  correctly is exactly the fail-*invisible* mode Rule 4 exists to prevent.
+- `PA24` is **`XTAL32K1`**, and §13.5.1 hands it to `XOSC32K` unconditionally the moment the
+  oscillator is enabled — silently, in the oscillator rather than in `PORT`. We already paid for
+  that once with a controlled A/B on hardware.
+
+So `PA00` takes `WO0` and the block follows: lamps on `PA00`/`PA01`/`PA02`, pins 22/23/24, three FET
+gates as one bundle. On the cnano `PA24`/`PA25` were forced *on* us by elimination; here they are
+avoided on purpose, which has the side benefit that `XOSC32K` stays available to a future revision
+instead of being permanently spent on a lamp (D126).
+
+Final count: **18 of 28**, 8 pads free, 2 reserved. The estimate had said ~17. Footprint pressure
+never became pin pressure.
+
+### The ATDF was sitting in the tree the whole time
+
+Reading the pinout from the datasheet via the MCP tools worked but came back as fragments — the
+§2.3 table is very wide and arrives column-shredded, and I stitched eleven rows together before
+noticing that `modules/hal/microchip/packs/.../atdf/PIC32CM6408PL10028.atdf` contains
+`<pinout name="DUAL28MVIO">`: all 28 positions, and every mux option for every peripheral, as
+machine-readable XML for the exact part number.
+
+**For future pin work on these parts, read the ATDF first, then use the datasheet to confirm.** The
+ATDF agreed with the HAL header pad-for-pad and with all eleven datasheet rows I had stitched, so
+it is not a shortcut that trades accuracy for convenience.
+
+One thing the ATDF does *not* model is SWD: there is an `<interface name="SWD">` but no pad
+signals for it, so `PA20` = SWDIO had to come from elsewhere. Two independent sources agree —
+datasheet §2.3's `PA20` row, and the cnano user guide's Table 3-2 (DBG0). Also worth knowing: the
+datasheet's own Table 2-1 says the 28-pin part has **22** I/O pins while the die bonds out **23**
+pads. The difference is `PA30`, which is RESET and is only reclaimable by disabling reset
+(§16.5.1). Not a discrepancy, but it looked like one for a while.
+
+### Two things found while reconciling item 20, neither of them about pins
+
+**The module's baud rate is wrong everywhere, and it is not a typo.** `DS70005544C` Table 2-1:
+`UART1` defaults to **230 400** 8N1. Every `115200` in this repo traces back to
+`fake_rnwf02.py` — the simulator (ADR-0015) — which was never the module. That is the cost of
+having developed the whole AT path against a simulated peer: the number propagated into
+`prj.conf`, three source comments and the overlay without ever meeting the real part.
+
+It matters beyond a constant. `main.c` drains the 256-byte ring every 10 ms, which at 115 200 is
+115 bytes — 2.2× margin. At 230 400 it is 230 bytes, and the margin falls to ~1.1×: about 1 ms of
+scheduling jitter overflows it. So the fix is not just `current-speed`, and it needs measurement
+rather than a guess. Logged as **D128, open**, and `PA06`/`PA07` are reserved as `SERCOM0`
+RTS/CTS (`txpo = 2` puts them there) so that flow control stays available without a respin. That
+is the one place this assignment spends pins on a maybe, and it seemed worth two pads out of eight.
+
+**Two easy-to-miss passives.** The RNWF02**PC** wants **1.2 kΩ pull-ups on module pins 2/3** — an
+I²C bus internal to the module, serving its own Trust&Go device. Easy to skip precisely because
+ADR-0018 says the product has no I²C, which is true and irrelevant here. And `Strap1`/`Strap2`
+(pins 10/26) must be pulled low for the UART1 host interface, but **they are also the module's DFU
+port**, so they get resistors and test points rather than a short — two components against
+permanently foreclosing module firmware update.
+
+### Documentation, and where Rule 2 bit
+
+D24 said "USB-C is power-only: no data, no D+/D− ESD network". D102 contradicted it a day earlier
+without anyone marking it, and item 20 still described a power-only receptacle. D24 is now
+**superseded** — but only its "no data" clause; the 5.1 kΩ CC pull-downs stand.
+
+Its ESD clause turns out to be *more* right than it looks: `MCP2221A` §4.1 Table 4-1 note 1 says
+no external resistors, capacitors or magnetics belong on D+/D− at all, since the part integrates
+its termination. So D127 narrows D24 there rather than reversing it, and any ESD part has to be a
+deliberately chosen low-capacitance TVS.
+
+ADR-0009 and ADR-0012 both assert "power-only" in their **Context**, and both decisions are
+unaffected — ADR-0009's rail architecture is untouched (the bridge is a fourth ~10 mA load on the
+same 3.3 V rail), and ADR-0012's real constraint was "PL10 has no USB device controller", which
+remains true and which a bridge cannot fix (D100). So: dated notes at the top, text left as
+written. That is the third time Rule 2 has prevented a tidy-looking edit that would have destroyed
+the record of what was believed when.
+
+**Tried and rejected** — five alternative assignments, written up in ADR-0023's table. The two
+worth remembering: lamps on `PA08`–`PA10` is the tidiest-looking block on the die and is an MVIO
+trap; and lamps on `PA00`/`PA17`/`PA18` (spending SERCOM-barren pads on lamps, keeping the
+SERCOM-rich block for UARTs) is good thrift that buys nothing once `txpo = 1` is available, and
+scatters three gates across opposite ends of the package for what is physically one cluster.
+
+**Open** — D128 (module baud, needs measurement on real hardware). Next: item 21, stackup and
+placement, which is the first thing that can invalidate a swap class in `PINOUT.md`.
+
+**A numbering note, so the gap is not read as a lost decision.** These entries were first written
+as D123–D127 and shifted to **D124–D128**: concurrent work on the Notification-matcher bug had
+already claimed D123 in `host/settings.hooks.json` without a register row existing yet. **D123 is
+reserved for that fix, not missing.** Worth knowing that two sessions can mint the same D-number
+when the register is the only registry and it is written last — the number in a source comment
+landed before the number in `PLAN.md`.
+
+---
+
 ## 2026-08-15 — a Wi-Fi test command, and the amber lamp that never existed
 
 **Done** — `test wifi`, and the fail-visible pattern replaced. D121, D122.

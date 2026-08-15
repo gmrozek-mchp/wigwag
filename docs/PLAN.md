@@ -111,7 +111,7 @@ Recorded because the reasoning is worth keeping (→ JOURNAL entry + ADR-0001 re
 | D23 | LDO = `MCP1826S-3302E/DB`, 1 A — covers RNWF02 TX peaks with margin | settled |
 | **D50** | **Single 3.3 V rail for MCU + module; `VDDIO2` tied to `VDD` (single-supply, §3.2.3)** | settled |
 | **D51** | **MVIO / 5 V VDD operation rejected** — no BOM saving, extra Zephyr porting, pinout constraints, `AVDD` tied to `VDD`. Left available for a future revision | settled |
-| D24 | USB-C is power-only: no data, no D+/D− ESD network, 5.1 k CC pulldowns | settled |
+| D24 | *Superseded by D102/D127 — the connector carries data.* USB-C is power-only: no data, no D+/D− ESD network, 5.1 k CC pulldowns. The CC pull-downs survive; the "no data" clause does not | superseded |
 | D25 | Debug = SWD, pyOCD runner (PICkit 5 / PICkit Basic / Atmel-ICE / J-Link all work) — **verified on the cnano's nEDBG, with DFP ≥ 1.5.437; see D69** | settled |
 | **D26** | **Lamps = 3× 10 mm diffused through-hole LEDs, driven from the 5 V rail via low-side N-FETs.** FETs are **required**, not optional — see below | settled |
 | **D27** | **4-layer PCB** with dedicated GND and PWR planes for EMC | settled |
@@ -229,7 +229,7 @@ FET selection: logic-level N-channel, Vgs(th) low enough to fully enhance at 3.3
 | **D98** | **Measured flash timing: page erase 10.1 ms, word write ~0.13 ms** at 24 MHz. Erase and write stall the CPU including interrupts (§26.4.2.3.1), so a single `erase()` call is capped at ~**49 pages (~24 KB)** by ADR-0016's 500 ms watchdog budget. The 4 KB storage partition is 8 pages / 81 ms. `FLMPER` would cut that ~8x and is deferred, gated on reading `BOOTPROT` | settled |
 | **D99** | **Issuing an *enable* command (`FLWR`/`FLPER`) is itself a command that clears `INTFLAG.READY`** — storing to the array before it lands sets `STATUS.PROGE` and silently does nothing. Measured `INTFLAG=0` right after writing `FLPER`. The first driver failed every erase this way while writes worked by accident of a `memcpy` in the gap | settled |
 | **D100** | **A bootloader, if built, is a developer convenience and bare-metal** — a stripped-down Adafruit-derived SAM-BA monitor targeting Zephyr's in-tree `bossac` runner, not MCUboot and not a Zephyr app. UF2 itself is impossible: PL10 has no USB peripheral, and the MCP2221A cannot lend one. `__VTOR_PRESENT = 1`, so a relocated app is viable (`docs/usb-serial-and-bootloader.md`) | spike |
-| **D101** | **The 28-pin target package does not have the cnano's pins.** `PB02` (lamp WO2) and `PB00`/`PB01` (console) do not exist on `PIC32CM6408PL10028` at all. Everything still fits — TCC0 WO0/WO1/WO2 on `PA00/01/02`, `PA08/09/10`, or `PA24/PA25/PA18`; SERCOM1 on `PA00/PA01` (mux D) or `PA10/PA11` (mux C) — but D49's specific mapping is cnano-only and the Phase 3 pin assignment must be redone against the 28-pin pinout | settled |
+| **D101** | **The 28-pin target package does not have the cnano's pins.** `PB02` (lamp WO2) and `PB00`/`PB01` (console) do not exist on `PIC32CM6408PL10028` at all, so D49's mapping is cnano-only and the pin assignment had to be redone. *The headline holds; the option list quoted here was incomplete — see D124/ADR-0023.* It missed `TCC0 WO1` on `PA17`, and it listed SERCOM1 as `PAD0`+`PAD1` only, so the lamp/console overlap it identified was an artefact of assuming TxD must sit on `PAD[0]` — which D125 disproves | settled |
 | **D102** | **Fit an `MCP2221A` USB-serial bridge** on the existing USB-C connector's D+/D-, `SERCOM1`, `VUSB` tied to 3V3 alongside `VDD`. Spends PL10's last SERCOM, so the product will never have I2C. Populated on the first build; **the console comes free** — a devicetree assignment, no firmware (ADR-0018) | settled |
 | **D103** | *Withdrawn by D116 — the pins are not wired.* `GP2` = `USBCFG`, `GP0` = `SSPND` — hardware evidence that a live USB host is attached and that it has not suspended. Not decoration: they are what makes transport selection a reading rather than a guess, since a charger does not enumerate | withdrawn |
 | **D104** | *Superseded by D119.* One transport at a time, selected from evidence rather than configuration | superseded |
@@ -251,6 +251,11 @@ FET selection: logic-level N-channel, Vgs(th) low enough to fully enhance at 3.3
 | **D120** | **A fresh device defaults to `usb`.** Wi-Fi cannot work until an SSID and passphrase are set, so anyone using it is already configuring and can set the transport at the same time; the wire needs nothing. The one easy mistake — setting an SSID on a wired device — is called out by the console at the moment it happens and repeated in the boot banner | built |
 | **D121** | **Fail-visible is a red/yellow wigwag at 1 Hz, and `ERROR` is both lamps steady.** There is no amber lamp — three discrete lamps cannot blend a colour — so the old "amber flicker" (both lamps at irregular levels, 70 ms steps) read as two lamps flickering at random rather than as a signal. A wigwag is the crossing signal this device is named after and is unmistakable. `ERROR` moved to both-steady because it previously *also* alternated red/yellow: the two are now distinguished by kind, not tempo, and `ERROR` stays distinct from `WAIT`'s slow red blink — the pair that matters most, since one means "it needs you" and the other "it already died". ADR-0007's decision is unchanged; only the pattern | built |
 | **D122** | **`test wifi` tries the stored settings without committing to them**, naming the connect-script step it reaches. A wrong passphrase fails at *associate and get an IP*, a wrong broker at *resolve, connect and CONNACK*, a miswired module at *module responding* — three problems that otherwise look identical. Runs asynchronously so the console stays responsive and the watchdog keeps being fed; brings the module up on demand; and states arriving from the broker mid-test are ignored, since a diagnostic must not change the display | built |
+| **D124** | **The 28-pin pin assignment is settled and lives in [`hardware/PINOUT.md`](../hardware/PINOUT.md)** (ADR-0023). 13 signal + 5 power = 18 of 28, 8 pads free, 2 reserved. **`PA00` is the only viable `TCC0 WO0`** — the other two candidates are `PA08` (MVIO domain) and `PA24` (`XTAL32K1`, taken unconditionally by §13.5.1) — so the lamp block is *forced* to `PA00`/`PA01`/`PA02`. Verified against the in-tree ATDF, the HAL pinout header and datasheet §2.3, which agree pad-for-pad | settled |
+| **D125** | **A SERCOM USART has two independent pin pairs, not one** — §29.6.1 `CTRLA.TXPO = 0x1` selects `PAD[2] = TxD, PAD[3] = XCK`, and `RXPO` picks any pad. So the console takes `SERCOM1` `PAD[2]`/`PAD[3]` on **`PA22`/`PA23`** (mux C, `txpo = 1`, `rxpo = 3`) — two pads with no `TCC0` and no `SERCOM0` function at all. **This dissolves D101's lamp/console overlap rather than trading it off.** Devicetree only: mainline's driver writes both fields straight into `CTRLA`. Beware `SERCOM1 PAD[0]`, also offered on `PA20` (SWDIO) and `PA31` (SWCLK) | settled |
+| **D126** | **The lamps stay off `PA24`/`PA25` on the product, unlike the cnano.** There they were forced by elimination; here they are avoided on purpose, because §13.5.1 hands both pins to `XOSC32K` the moment it is enabled — silently, in the oscillator rather than in `PORT`, which already cost one controlled hardware A/B. Keeping them clear also leaves `XOSC32K` **available** to a future revision instead of spent on a lamp | settled |
+| **D127** | **USB-C carries D+/D− to the bridge; D24's "power-only" clause is superseded.** Follows from D102 but was never written down at the connector, and item 20 still described a power-only receptacle. The CC pull-downs (5.1 kΩ) and the ≤ 10 µF `VBUS` inrush limit stand. `MCP2221A` §4.1 Table 4-1 note 1 is explicit that **no external resistors, capacitors or magnetic components belong on D+/D−** — which narrows D24's ESD omission rather than reversing it. `USBCFG`/`SSPND` remain unwired (D116) | settled |
+| **D128** | **The module's real baud rate is 230 400, not the 115 200 the firmware is built around.** `DS70005544C` Table 2-1: `UART1_TX`/`UART1_RX` default to 230 400 8N1, no flow control — and the add-on board's PC-companion mode confirms it. Every 115 200 in the tree traces to `fake_rnwf02.py` (ADR-0015), which was never the module. At 230 400 the 256-byte ring drains 230 B per `main.c` 10 ms tick instead of 115 B, so margin falls from ~2.2× to ~1.1× and ~1 ms of scheduling jitter overflows it. Needs a measured call between raising `current-speed`, shortening the poll, widening the ring, or fitting flow control — `PA06`/`PA07` are reserved as `SERCOM0` RTS/CTS (`txpo = 2`) so the last option stays open without a respin | open |
 
 ---
 
@@ -284,38 +289,41 @@ by code.
 
 ## Pin budget — SSOP-28
 
-| Function | Pins |
-|---|---|
-| Power / ground / VDDIO2 (MVIO domain — must sit at 3.3 V to match the module) | ~4 |
-| Reset | 1 |
-| SWD (SWCLK, SWDIO) | 2 |
-| Module UART TX/RX — SERCOM0 PAD[0]/PAD[1] | 2 |
-| Module control — MCLR out, INTOUT in | 2 |
-| Lamps — TCC0 WO0/WO1/WO2 | 3 |
-| Button | 1 |
-| USB bridge UART — SERCOM1 PAD[0]/PAD[1] (D102) | 2 |
-| **Used / available** | **~17 of 28** |
+**Settled 2026-08-15. The map of record is [`hardware/PINOUT.md`](../hardware/PINOUT.md)**
+(D124, ADR-0023); this table is now the summary rather than the estimate.
 
-`USBCFG`/`SSPND` were budgeted here and are now withdrawn (D116): received bytes are necessary and
-sufficient, and once the transport became a stored setting (D119) the pins had nothing left to do.
+| Function | Pad(s) | Pins |
+|---|---|---|
+| `VDD` ×2, `GND` ×2, `VDDIO2` (tied to `VDD`, D50) | — | 5 |
+| RESET | `PA30` | 1 |
+| SWD — SWDIO, SWCLK | `PA20`, `PA31` | 2 |
+| Lamps — TCC0 WO0/WO1/WO2, mux F | `PA00`/`PA01`/`PA02` | 3 |
+| Module UART TX/RX — SERCOM0 PAD[0]/PAD[1], mux C | `PA04`/`PA05` | 2 |
+| Module control — `MCLR` out, `INTOUT` in | `PA03`, `PA19` | 2 |
+| Console UART TX/RX — SERCOM1 PAD[2]/PAD[3], mux C (D125) | `PA22`/`PA23` | 2 |
+| Button | `PA21` | 1 |
+| **Used** | | **18 of 28** |
+| *Reserved, unpopulated* — SERCOM0 RTS/CTS against D128 | `PA06`/`PA07` | *2* |
+| *Free* | `PA08`–`PA11`, `PA17`, `PA18`, `PA24`, `PA25` | *8* |
 
-Still comfortable, with margin for the module's `UART2_TX` debug line and a board status LED.
+Comfortable, and it never became tight: the estimate said ~17 and the answer is 18 with eight
+pads spare. `USBCFG`/`SSPND` were once budgeted here and are withdrawn (D116). The module's
+`UART2_TX` debug line is a **test point, not an MCU pin** — and `UART2_RX` does not exist, so it
+is one-directional by design.
 
 **The 28-pin package is not the cnano (D101).** `PB00`–`PB03` do not exist on
 `PIC32CM6408PL10028`, so neither the dev board's lamp pin (`PB02` = TCC0 WO2) nor its console pins
-(`PB00`/`PB01` = SERCOM1) transfer. Verified options on the 28-pin part, from
-`hal_microchip/.../pio/pic32cm6408pl10028.h`:
+(`PB00`/`PB01` = SERCOM1) transfer. The full mux option table, and the evidence behind every row,
+is in `hardware/PINOUT.md`. Two things worth carrying here:
 
-| Function | 28-pin options |
-|---|---|
-| Lamps, TCC0 WO0/WO1/WO2 (mux F) | `PA00`/`PA01`/`PA02`, or `PA08`/`PA09`/`PA10`, or `PA24`/`PA25`/`PA18` |
-| USB bridge, SERCOM1 PAD0/PAD1 | `PA00`+`PA01` (mux D), or `PA10`+`PA11` (mux C) |
-| Module, SERCOM0 PAD0/PAD1 | `PA04`+`PA05` (mux C), as D76 |
+- **`PA00` is the only viable TCC0 WO0** — `PA08` is MVIO, `PA24` is `XTAL32K1` — so the lamp block
+  is forced, not chosen (D124, D126).
+- **D101's lamp/console overlap was not real.** It assumed a USART's TxD must sit on `PAD[0]`;
+  `txpo = 1` puts it on `PAD[2]`, which reaches `PA22`/`PA23` — pads no other consumer wants
+  (D125). The "lamps on `PA24`/`PA25`/`PA18`" split D101 proposed is not needed and was rejected.
 
-Note the overlap: `PA00`–`PA02` and `PA08`–`PA11` serve both the lamps and SERCOM1, so the two
-cannot both take the same block. One workable split is lamps on `PA24`/`PA25`/`PA18` with the
-bridge on `PA00`/`PA01`. Exact assignment is a Phase 3 task against datasheet §2.3, and `PA20`
-(SWDIO), `PA31` (SWCLK) and `PA30` (RESET) are reserved.
+`PA20` (SWDIO), `PA31` (SWCLK) and `PA30` (RESET) are reserved. SWCLK's **1 kΩ pull-up is
+required**, not optional — datasheet Table 40-6 calls it "critical for reliable operation".
 
 ---
 
@@ -460,9 +468,36 @@ Remaining Phase 0 loose end: nothing is committed to git yet (D16).
 19. ✅ **Record `ram_report`/`rom_report`** in the journal; confirm the 8 KB budget holds (D48).
 
 ### Phase 3 — PCB (KiCad 9, 4-layer)
-20. Schematic: PL10 SSOP-28 + RNWF02PC + MCP1826 + USB-C power-only + 3 lamp channels with
-    low-side FETs off the 5 V rail + button + SWD header + module `UART2_TX` test point +
-    `STRAP1`/`STRAP2` pulled low for UART host mode + VDDIO2 tied to 3.3 V.
+
+19b. ✅ **Pin assignment** — [`hardware/PINOUT.md`](../hardware/PINOUT.md), D124–D128, ADR-0023.
+    Verified pad-by-pad against the in-tree ATDF, the HAL pinout header and datasheet §2.3.
+
+20. Schematic. **`hardware/PINOUT.md` is the pin- and net-level spec**; this is the parts list and
+    the things that are not pins.
+    - **PL10 SSOP-28** — `VDDIO2` tied to 3V3 alongside `VDD` (§3.2.3, D50); decoupling per
+      §40; SWD header with a **1 kΩ pull-up on SWCLK** (Table 40-6, not optional) and a weak
+      pull-up on SWDIO; RESET.
+    - **RNWF02PC** — UART1 on SERCOM0, `MCLR` driven, `INTOUT` in. **1.2 kΩ pull-ups on module
+      pins 2/3** (`I2C_SCL`/`I2C_SDA` — internal to the module's own Trust&Go device, required on
+      the `PC` variant, and easy to miss because the product has no I²C of its own).
+      `Strap1`/`Strap2` (pins 10/26) pulled low **through resistors, with test points** — low
+      selects the UART1 host interface (§2.2 Table 2-2), but those are also the DFU pins, so
+      hard-shorting them would permanently foreclose module firmware update. `UART2_TX` debug
+      test point (TX only — there is no `UART2_RX`). `TP` (pin 24) is a 1.5 V PMU test point: do
+      not load. Pins 7/17/18 reserved, do not connect. Bulk capacitance at the module for TX peaks.
+      Footprints for `UART1_RTSn`/`UART1_CTSn`, **DNP**, against D128.
+    - **MCP2221A-I/ST** — `VUSB` **tied to the 3V3 rail**, not left to the internal LDO, which
+      cannot supply it when `VDD` is already 3.3 V (§1.6.2.1); local ceramic bypass on `VUSB`.
+      `GP0`–`GP3` are NC or activity LEDs. **`USBCFG`/`SSPND` are deliberately not wired to the
+      MCU (D116)** — do not re-add them.
+    - **USB-C** — **power *and* data (D127, superseding D24's "no data")**: `VBUS` to the LDO,
+      D+/D− to the bridge. 5.1 kΩ CC pull-downs, ≤ 10 µF effective across `VBUS` or inrush
+      limiting (§1.6.2.2). **No resistors, capacitors or magnetics on D+/D−** — the MCP2221A
+      integrates its own termination and §4.1 Table 4-1 note 1 says none are necessary. Any ESD
+      part must therefore be a deliberately chosen low-capacitance TVS, not a generic filter.
+    - **MCP1826** 3V3 rail; **3 lamp channels**, low-side N-FETs off the 5 V rail, gate resistors,
+      per-colour current-setting resistors (ADR-0009, D26); **button** with the internal pull-up
+      (no external part).
 21. Stackup: signal / GND plane / PWR plane / signal. Module at board edge, ground-plane edges
     aligned, antenna keepout, bulk capacitance at the module for TX peaks.
 22. ERC/DRC, 3D export to drive the enclosure model, BOM, fab outputs, order.

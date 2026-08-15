@@ -3,6 +3,13 @@
 - **Status:** Accepted
 - **Date:** 2026-08-14
 
+> **Note, 2026-08-15:** the Context paragraph below is out of date on one point — the connector is
+> no longer power-only. ADR-0018 put an `MCP2221A` on D+/D− (D102), and D126 records the
+> consequence at the connector. **The decision in this ADR is unaffected**: one 3.3 V rail for MCU
+> and module, LEDs on 5 V behind low-side FETs. The bridge is simply a fourth load on the same
+> 3.3 V rail (~10 mA typ), which the 1 A `MCP1826` absorbs without comment. Left as written per
+> Rule 2.
+
 ## Context
 
 The board is powered from USB-C, **power only** — because the link is Wi-Fi, there is no USB data,
