@@ -133,6 +133,53 @@ into item 22.
 
 **Next** — item 20, the schematic, on the 11 × 17 sheet D131 just fixed. Nothing blocks it.
 
+### Later the same day — item 20, and the schematic exists
+
+**Done** — `hardware/SCHEMATIC.md` (the net-level spec of record), `hardware/gen_schematic.py`,
+and `hardware/kicad/wigwag.kicad_sch`. D137–D141. **ERC: 1 violation**, the module footprint that
+does not exist yet.
+
+**The schematic is generated, not drawn** (D141). The netlist lives in a script beside the spec, and
+connectivity is by **net label on a stub** rather than drawn wire — so placement is purely cosmetic
+and cannot break the netlist, and a value change is one line plus a regenerate instead of surgery on
+a 2 000-line S-expression. UUIDs are hash-derived so an unchanged netlist regenerates byte-identical.
+
+**KiCad is 10.0.5, not the 9 the plan assumed.** A `version 20231120` (KiCad 8-era) file parses and
+migrates cleanly, so that is what the generator emits.
+
+**ERC went 350 → 1, and every one of the 349 was a real lesson:**
+
+| Count | Violation | Cause and fix |
+|---|---|---|
+| 265 | `endpoint_off_grid` | Component origins were on integer millimetres; KiCad's grid is **1.27 mm**. All pin offsets were already multiples of 1.27, so snapping the origins fixed every one. |
+| 59 | `lib_symbol_issues` | One per part: `lib_id "wigwag:X"` resolved to no library. Fixed by emitting a real `wigwag.kicad_sym` **and** a `sym-lib-table`, not just the in-file `lib_symbols` cache. |
+| 24 | `wire_dangling` + `no_connect_dangling` + `no_connect_connected` | 8 pins × 3 symptoms. Pins declared electrical type `no_connect` **must be left bare** — KiCad treats both a stub and an NC flag on such a pin as an error. |
+| 1 | `power_pin_not_driven` | `+5V_LDO` is a *separate net* from `+5V` because FB1 sits between them (D135), so the flag on `+5V` did not drive U4's `VIN`. Needed its own. |
+
+That third row corrects something I had written into `SCHEMATIC.md` an hour earlier — that *every*
+no-connect would get an explicit flag. Wrong: datasheet-`NC` pins get none, and the pin **type** is
+the better documentation anyway, because it makes ERC complain if someone later wires them. The 21
+*functional* pins we decline to use (U1's free pads, U3's `GP0`–`GP3`, J1's `SBU`, J2's `SWO`) do get
+flags, since for those "considered and declined" is a real claim. Both now stated in the doc.
+
+**Two bugs caught by thinking about symbol↔footprint mapping, before KiCad could catch them:**
+
+- **The LDO symbol had a 4th `TAB` pin with no pad to land on.** KiCad's `SOT-223-3_TabPin2`
+  footprint *is* the tab as pad 2. Now 3 pins.
+- **Footprint names had no library prefix**, so none would have resolved. Rather than guess, every
+  one was checked against the installed libraries — all 14 exist, and each footprint's pad names
+  were compared against its symbol's pin numbers programmatically. The GCT USB4105 16P footprint
+  turned out to have pads `A1…B12` plus `SH`, matching the authored USB-C symbol exactly.
+
+**Verified** — KiCad's *own* netlist export re-read and compared to the spec: **46 named nets,
+identical membership**, plus 29 deliberately unconnected pins (21 flagged + 8 bare NC-type). PDF
+renders on a B sheet with the title block, DNP parts X'd, no-connects marked.
+
+**Open** — the `wigwag:RNWF02PC_Module` footprint (item 22, and note the package drawing read
+earlier was the U.FL variant's, so confirm the `PC` drawing first); the LED part, which sets
+R24–R26; and the exact USB-C receptacle, which sets Phase 4's cutout. The generated placement is
+legible but plain — tidying it in Eeschema is free, since labels carry the connectivity.
+
 ---
 
 ## 2026-08-15 — WAIT had never once fired, and the reason it can get stuck

@@ -1,0 +1,7 @@
+{
+  "board": {"design_settings": {}},
+  "meta": {"filename": "wigwag.kicad_pro", "version": 1},
+  "schematic": {"legacy_lib_dir": "", "legacy_lib_list": []},
+  "sheets": [["cd676b7a-2593-5e51-af91-94eb577cf77f", "Root"]],
+  "text_variables": {}
+}

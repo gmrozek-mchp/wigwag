@@ -1,0 +1,4 @@
+(sym_lib_table
+  (version 7)
+  (lib (name "wigwag")(type "KiCad")(uri "${KIPRJMOD}/wigwag.kicad_sym")(options "")(descr "wigwag project symbols, generated"))
+)

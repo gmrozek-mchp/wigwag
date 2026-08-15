@@ -346,14 +346,39 @@ same thing. That is the third job those series resistors are earning.
 Every open question on this board resolves into this table — a BOM change, not a respin. That is
 deliberate (ADR-0023, ADR-0024).
 
-## ERC expectations
+## The generated schematic, and what ERC actually says
 
-- **Every `no-connect` in the tables above gets an explicit no-connect flag**, not a bare pin. That
-  is the mechanism that tells a future reader "considered and declined" instead of "forgotten" —
-  which is exactly how module pin 11 nearly got left unconnected against note 5.
-- `+3V3` and `+5V` need power flags; `+5V` is driven by J1 and `+3V3` by U4.
-- U2 pins 7, 17, 18 are `Reserved`/do-not-connect and will read as unconnected outputs. Flag them.
-- Expect DNP parts (R13, R14, C10) to show as populated in the netlist; DNP is a fab/BOM attribute.
+`hardware/kicad/wigwag.kicad_sch` is **generated from this document** by
+[`gen_schematic.py`](gen_schematic.py) — regenerate rather than hand-editing:
+
+```
+python3 hardware/gen_schematic.py
+kicad-cli sch erc --output erc.rpt hardware/kicad/wigwag.kicad_sch
+```
+
+Connectivity is by **net label on a short stub**, not drawn wire, so component placement is purely
+cosmetic — rearranging in Eeschema cannot change the netlist. The generated placement is spaced to
+be legible, not pretty; tidy it in the GUI freely.
+
+**ERC status: 1 violation, and it is the expected one** — `footprint_link_issues` on U2, because
+`wigwag:RNWF02PC_Module` has to be drawn from the package drawing (item 22). KiCad's own exported
+netlist was checked against the tables above: 46 named nets, membership identical, plus 29
+deliberately unconnected pins. Verified on **KiCad 10.0.5**.
+
+Two things learned from making ERC clean, both worth keeping:
+
+- **Datasheet-`NC` pins get no flag and no stub.** Pins declared with electrical type `no_connect`
+  in the symbol — U2's 1, 7, 8, 17, 18, 25 and J2's 7, 8 — are left bare, because KiCad treats
+  both a stub and an NC flag on such a pin as errors. The pin *type* is the documentation, and it
+  makes ERC complain if anyone ever wires them, which is stronger than a flag. **The 21 functional
+  pins we choose not to use** — U1's free pads, U3's `GP0`–`GP3`/`RST`/`SDA`/`SCL`, J1's `SBU`,
+  J2's `SWO` — do get explicit flags, since for those "considered and declined" is a real claim.
+- **`+5V_LDO` needs its own power flag.** It is a separate net from `+5V` because FB1 sits between
+  them (D135), so a flag on `+5V` does not drive the LDO's `VIN`. Three flags total: `+5V`,
+  `+5V_LDO`, `GND`. `+3V3` needs none — U4 pin 3 is typed `power_out`.
+
+Also: DNP parts (R13, R14, C10) still appear in the netlist, as they should — DNP is a fab/BOM
+attribute, not an electrical one.
 
 ## Open
 
