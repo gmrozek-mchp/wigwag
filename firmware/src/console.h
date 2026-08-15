@@ -18,15 +18,17 @@
 #define CONSOLE_H
 
 #include "settings.h"
+#include "transport.h"
 
 /**
  * Take over receive on the console UART and start accepting commands.
  *
- * @p s is borrowed and must outlive the console — it is the live settings the commands edit, the same
- * struct main() points the AT client's configuration at. Returns 0, or -ENODEV if the console UART is
- * missing, in which case the device runs exactly as it did before: unconfigurable, but working.
+ * @p s and @p t are borrowed and must outlive the console: @p s is the live settings the commands
+ * edit, and @p t is told whenever a host speaks, which is what lets the wired path be trusted at all
+ * (D104). Returns 0, or -ENODEV if the console UART is missing, in which case the device runs exactly
+ * as it did before: unconfigurable, but working.
  */
-int console_init(struct wigwag_settings *s);
+int console_init(struct wigwag_settings *s, struct transport *t);
 
 /** Drain received bytes and execute any complete lines. Call from the service loop. */
 void console_poll(void);

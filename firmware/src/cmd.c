@@ -256,6 +256,25 @@ bool cmd_parse(char *line, struct cmd *out)
 		return true;
 	}
 
+	if (strcmp(verb, "host") == 0) {
+		char *value;
+
+		(void)split(rest, &value);
+		out->kind = CMD_HOST;
+
+		if (strcmp(value, "on") == 0) {
+			out->num = 1;
+		} else if (strcmp(value, "off") == 0) {
+			out->num = 0;
+		} else {
+			return false;
+		}
+
+		out->num_valid = true;
+
+		return true;
+	}
+
 	if (strcmp(verb, "echo") == 0) {
 		char *value;
 

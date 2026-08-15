@@ -178,6 +178,18 @@ static void test_echo_verb(void)
 	CHECK(!run("echo 1", &c), "numeric echo refused - on|off only, so it reads unambiguously");
 }
 
+static void test_host_verb(void)
+{
+	struct cmd c;
+
+	/* The serial stand-in for wigwag/host_online, which has no retention and no Last Will. */
+	CHECK(run("host on", &c) && c.kind == CMD_HOST && c.num == 1U, "host on");
+	CHECK(run("host off", &c) && c.kind == CMD_HOST && c.num == 0U, "host off (the goodbye)");
+	CHECK(!run("host", &c) && c.kind == CMD_HOST, "bare host refused");
+	CHECK(!run("host 1", &c), "numeric refused - on|off only, matching echo");
+	CHECK(!run("hostile", &c) && c.kind == CMD_UNKNOWN, "a longer verb is not host");
+}
+
 static void test_secrets_are_marked(void)
 {
 	/* `show` relies on this. Getting it wrong prints a Wi-Fi password to anyone with a cable. */
@@ -245,6 +257,7 @@ int main(void)
 	test_state_verb();
 	test_brightness_and_gain();
 	test_echo_verb();
+	test_host_verb();
 	test_secrets_are_marked();
 	test_key_names_round_trip();
 	test_long_lines_do_not_overrun();

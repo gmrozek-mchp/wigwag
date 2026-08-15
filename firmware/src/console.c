@@ -10,6 +10,7 @@
 #include "lamp_pwm.h"
 #include "lineedit.h"
 #include "settings_store.h"
+#include "transport.h"
 
 #include <zephyr/device.h>
 #include <zephyr/drivers/uart.h>
@@ -33,6 +34,7 @@ BUILD_ASSERT(LINEEDIT_BUF_SZ >= CMD_LINE_MAX,
 
 static const struct device *uart_dev;
 static struct wigwag_settings *cfg;
+static struct transport *tport;
 static struct lineedit editor;
 
 static struct {
@@ -96,7 +98,8 @@ static void print_help(void)
 	       "  state IDLE|BUSY|WAIT|ERROR\n"
 	       "  brightness <0-255>       applies now\n"
 	       "  gain green|yellow|red <0-255>   per-lamp calibration, applies now\n"
-	       "  echo on|off              off for a host program driving this port\n");
+	       "  echo on|off              off for a host program driving this port\n"
+	       "  host on|off              host liveness; repeat within 10 s to stay trusted\n");
 }
 
 static void print_one(enum cmd_key key)
@@ -240,6 +243,18 @@ static void exec(struct cmd *c, bool ok)
 		printk("echo %s\n", (c->num != 0U) ? "on" : "off");
 		break;
 
+	case CMD_HOST:
+		if (c->num == 0U && tport != NULL) {
+			/*
+			 * An orderly goodbye. Saying goodbye is itself the host speaking, so console_poll()
+			 * has already recorded a heartbeat and cancelled any previous goodbye; applying this
+			 * afterwards is what makes the specific meaning win over the generic one.
+			 */
+			transport_note_host_bye(tport, (uint32_t)k_uptime_get());
+		}
+		printk("host %s\n", (c->num != 0U) ? "on" : "off");
+		return;
+
 	case CMD_UNKNOWN:
 	default:
 		printk("unknown command; try help\n");
@@ -247,11 +262,12 @@ static void exec(struct cmd *c, bool ok)
 	}
 }
 
-int console_init(struct wigwag_settings *s)
+int console_init(struct wigwag_settings *s, struct transport *t)
 {
 	static const struct lineedit_io io = { .out = echo_out };
 
 	cfg = s;
+	tport = t;
 	uart_dev = DEVICE_DT_GET(CONSOLE_NODE);
 
 	if (!device_is_ready(uart_dev)) {
@@ -294,6 +310,15 @@ void console_poll(void)
 			struct cmd parsed;
 			char *line = lineedit_line(&editor);
 			bool ok = cmd_parse(line, &parsed);
+
+			/*
+			 * Any recognised command counts as the host being alive — it is demonstrably
+			 * talking to us, which is the whole test (D104). A rejected line does not count:
+			 * noise on the wire is not a host.
+			 */
+			if (ok && parsed.kind != CMD_NONE && tport != NULL) {
+				transport_note_host(tport, (uint32_t)k_uptime_get());
+			}
 
 			exec(&parsed, ok);
 		}

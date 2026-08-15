@@ -31,6 +31,7 @@ target_sources(app PRIVATE
   src/console.c     # the Zephyr console adapter and command effects
   src/settings.c    # pure settings value handling
   src/settings_store.c  # persistence over NVS in the storage partition
+  src/transport.c   # which transport is active, and may it be believed (D104)
   src/wdog.c        # pure liveness accounting: is every task that matters still beating?
   src/wdog_wdt.c    # the WDT peripheral, and the reset-cause report at boot
 )

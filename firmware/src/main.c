@@ -20,6 +20,7 @@
 #include "rnwf_at_cmds.h"
 #include "rnwf_uart.h"
 #include "settings_store.h"
+#include "transport.h"
 #include "wdog.h"
 #include "wdog_wdt.h"
 
@@ -34,6 +35,7 @@
 static struct rnwf_at at_client;
 static struct link link_state;
 static struct button button_state;
+static struct transport tport;
 
 /*
  * Live settings: build-time defaults from Kconfig, overlaid by whatever is stored, editable over the
@@ -296,13 +298,38 @@ static void at_service(bool at_ready)
 		console_poll();
 
 		link_tick(&link_state, (uint32_t)k_uptime_get());
-		lamp_pwm_set_link(link_is_trusted(&link_state));
 
 		if (link_get(&link_state) != link_reported) {
 			link_reported = link_get(&link_state);
 			printk("wigwag: link %s (%s)\n",
 			       (link_reported == LINK_LINKED) ? "LINKED" : "UNLINKED",
 			       link_reason_str(link_state.reason));
+		}
+
+		/*
+		 * link.c answers "is the Wi-Fi path trustworthy"; transport.c answers "which path is the
+		 * device listening to, and may it be believed" (D104). The lamps follow the transport, so
+		 * a trusted USB host outranks a healthy Wi-Fi link and a quiet USB host goes fail-visible
+		 * even while Wi-Fi is up.
+		 */
+		{
+			static enum transport_kind tport_reported = TRANSPORT_NONE;
+			static bool trust_reported;
+			uint32_t t_now = (uint32_t)k_uptime_get();
+
+			transport_note_wifi(&tport, link_is_trusted(&link_state), t_now);
+			transport_tick(&tport, t_now);
+			lamp_pwm_set_link(transport_is_trusted(&tport));
+
+			if (transport_active(&tport) != tport_reported ||
+			    transport_is_trusted(&tport) != trust_reported) {
+				tport_reported = transport_active(&tport);
+				trust_reported = transport_is_trusted(&tport);
+				printk("wigwag: transport %s %s (%s)\n",
+				       transport_kind_str(tport_reported),
+				       trust_reported ? "TRUSTED" : "untrusted",
+				       transport_reason_str(tport.reason));
+			}
 		}
 
 		/*
@@ -370,7 +397,14 @@ int main(void)
 		lamp_pwm_set_gain((enum lamp_id)i, settings.gain[i]);
 	}
 
-	(void)console_init(&settings);
+	/*
+	 * `wifi_configured` is simply "is there an SSID to try". An empty one is the wired variant's
+	 * normal state (ADR-0018), and it is what stops the device below from spending its life trying
+	 * to associate with a network called "".
+	 */
+	transport_init(&tport, settings.ssid[0] != '\0');
+
+	(void)console_init(&settings, &tport);
 
 	link_init(&link_state, LINK_HOST_GRACE_MS);
 
@@ -380,11 +414,21 @@ int main(void)
 		printk("wigwag: continuing without the button\n");
 	}
 
-	at_ready = (rnwf_uart_init(&at_client, &module_cfg, &cb) == 0);
-	if (at_ready) {
-		printk("wigwag: module UART up, connecting to \"%s\" (%s)\n", module_cfg.ssid,
-		       (settings.pass[0] != '\0') ? "passphrase set" : "open");
-		rnwf_at_start(&at_client, (uint32_t)k_uptime_get());
+	/*
+	 * No SSID, no Wi-Fi. Previously this started the AT client regardless and it would reset,
+	 * time out and back off forever against an empty network name — noisy, and pointless on a unit
+	 * that is driven over the wire. The console can set an SSID and reboot into the other mode.
+	 */
+	if (settings.ssid[0] == '\0') {
+		printk("wigwag: no ssid configured, waiting for a host on the console\n");
+		at_ready = false;
+	} else {
+		at_ready = (rnwf_uart_init(&at_client, &module_cfg, &cb) == 0);
+		if (at_ready) {
+			printk("wigwag: module UART up, connecting to \"%s\" (%s)\n", module_cfg.ssid,
+			       (settings.pass[0] != '\0') ? "passphrase set" : "open");
+			rnwf_at_start(&at_client, (uint32_t)k_uptime_get());
+		}
 	}
 
 	/*

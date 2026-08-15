@@ -7,6 +7,89 @@ Entries record what was done, why, and — importantly — what was tried and re
 
 ---
 
+## 2026-08-14 — transport selection, and the heartbeat MQTT never needed
+
+**Done** — `transport.c`: one transport at a time, chosen from evidence, with the lamps following the
+transport rather than `link.c` directly. D104 is built; D111–D113 record what it turned out to require.
+482 host checks.
+
+### The thing I did not expect to find
+
+D104 said "USB wins when a live host is present, else Wi-Fi". Before writing it I went to look at how
+often the daemon actually speaks, so I could pick a staleness budget — and found that **it does not
+speak periodically at all**. `wigwag/host_online` is published *once*, retained, with `0` as the Last
+Will (`publisher.py`), and the 2 s loop in `__main__.py` only writes a status file and sweeps expired
+sessions. State is published on change.
+
+That is a perfectly good design *because there is a broker*: retention holds the value for a late
+subscriber, and the will announces the death on the daemon's behalf. **A serial line has neither.**
+Nothing retains, and nothing notices a daemon that stops. And `USBCFG` cannot cover it either — a
+computer whose daemon has crashed still enumerates perfectly happily, which is exactly why ADR-0018
+said enumeration supplements a heartbeat rather than replacing it.
+
+So the wired path is the one place the device has to demand *periodic* positive evidence, which is
+D75's lesson arriving for the third time. `host on`, repeated within 10 s: five missed beats at the
+daemon's existing 2 s tick, and the same 10 s budget D34 already sets for the broker, so both
+transports go fail-visible on one schedule rather than two.
+
+**The daemon does not send it yet** — it has no serial backend at all. That is host-side work and it
+needs the `pyserial`-on-Windows decision first, so D111 is marked "built (device side)". Worth being
+explicit that the wired transport is not usable end to end until that lands.
+
+### The handover rule worth arguing about
+
+When a USB host goes quiet while Wi-Fi is *healthy*, the device goes **fail-visible anyway** for five
+seconds before handing over. That looks wrong at first — there is a trustworthy source sitting right
+there — and it is deliberate: MQTT's retained state could be older than the thing USB was showing, so
+switching instantly would trade a known unknown for an unknown one. Untrusted immediately (Rule 4),
+then release. An orderly `host off` or a deasserted `USBCFG` skips the window, because both are
+unambiguous and there is nothing to wait out.
+
+The test that pins this down asserts the uncomfortable half: `still fail-visible with wifi up and
+waiting`.
+
+### Small decisions inside it
+
+- **Received bytes outrank the pin.** If `USBCFG` says no host but commands are arriving, believe the
+  commands — and on the Curiosity Nano, which has no such pin, bytes are the only evidence there is.
+  That is what makes the whole thing testable today rather than after the PCB.
+- **Any recognised command is a heartbeat**, not just `host on`. Something is demonstrably talking to
+  us, which is the entire test. A *rejected* line does not count: noise on a wire is not a host.
+- **Talking again cancels a goodbye.** A daemon that said `host off` and then carried on has changed
+  its mind, and the newer evidence is better.
+- **No SSID means the AT client never starts** (D113). It used to reset, time out and back off forever
+  against a network named `""`. That is the wired variant's normal state, and the boot line now says
+  `no ssid configured, waiting for a host on the console`.
+
+### Verified on hardware
+
+With no SSID: boot is quiet, `host on` → `transport usb TRUSTED (ok)`, then silence → `usb untrusted
+(host quiet)` → `none untrusted (nothing configured)`, then `host on` reclaims instantly.
+
+Then the real one, with the fake module attached and Wi-Fi genuinely up:
+```
+wigwag: link LINKED (ok)
+wigwag: transport wifi TRUSTED (ok)
+>>> host on
+wigwag: transport usb TRUSTED (ok)      <- took it from a healthy wifi link
+>>> host off
+wigwag: transport wifi TRUSTED (ok)     <- released at once, no release window
+```
+
+A caution about my own numbers: the timestamps in that first run were when my *script read the port*,
+not when the device spoke, so they overstate the release delay. Device-side timestamps would be needed
+to quote it properly; the sequence is what the test demonstrates.
+
+**Measured** — flash 33 200 B (54.04 %), RAM **5 256 B (64.16 %)**. The state machine costs **32 bytes**.
+
+**Host tests** — 8 377 checks, 0 failures: rnwf_at 100, link 25, lamp 1 438, button 23, wdog 6 159,
+cmd 84, lineedit 37, settings 29, transport 482.
+
+**Still open**: the `USBCFG`/`SSPND` GPIOs have no devicetree node yet, because the cnano has no such
+pins — `TRANSPORT_USB_UNKNOWN` is the honest answer there, and the product board (D103) supplies them.
+
+---
+
 ## 2026-08-14 — configuration over the console, and the shell that would not fit
 
 **Done** — `cmd.c` + `lineedit.c` + `console.c` + `settings.c` + `settings_store.c`: set the Wi-Fi

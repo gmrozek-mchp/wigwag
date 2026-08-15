@@ -52,6 +52,16 @@ enum cmd_kind {
 	 * driving the same port — so it is a runtime choice rather than a build-time one.
 	 */
 	CMD_ECHO,
+
+	/**
+	 * `host on|off`, in `num` — the serial analogue of `wigwag/host_online`.
+	 *
+	 * Over MQTT the daemon publishes that topic retained and registers `0` as its Last Will, so the
+	 * broker holds the value and reports the death. A serial line has neither, so the wired path
+	 * needs the host to say periodically that it is still there (D111). `off` is the orderly
+	 * goodbye.
+	 */
+	CMD_HOST,
 };
 
 /**

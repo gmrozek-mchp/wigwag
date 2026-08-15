@@ -20,12 +20,13 @@ WDOG  := $(BUILD)/test_wdog
 CMD   := $(BUILD)/test_cmd
 LEDIT := $(BUILD)/test_lineedit
 SET   := $(BUILD)/test_settings
+TRANS := $(BUILD)/test_transport
 SIM   := $(BUILD)/at_host
 SRCS  := test_rnwf_at.c ../src/rnwf_at.c
 DEPS  := ../src/rnwf_at.h ../src/rnwf_at_cmds.h
 
-.PHONY: all link lamp button wdog cmd lineedit settings sim clean
-all: $(BIN) $(LINK) $(LAMP) $(BTN) $(WDOG) $(CMD) $(LEDIT) $(SET)
+.PHONY: all link lamp button wdog cmd lineedit settings transport sim clean
+all: $(BIN) $(LINK) $(LAMP) $(BTN) $(WDOG) $(CMD) $(LEDIT) $(SET) $(TRANS)
 	./$(BIN)
 	./$(LINK)
 	./$(LAMP)
@@ -34,9 +35,15 @@ all: $(BIN) $(LINK) $(LAMP) $(BTN) $(WDOG) $(CMD) $(LEDIT) $(SET)
 	./$(CMD)
 	./$(LEDIT)
 	./$(SET)
+	./$(TRANS)
 
 $(BIN): $(SRCS) $(DEPS) | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $(SRCS) $(LDFLAGS)
+
+transport: $(TRANS)
+	./$(TRANS)
+$(TRANS): test_transport.c ../src/transport.c ../src/transport.h | $(BUILD)
+	$(CC) $(CFLAGS) -o $@ test_transport.c ../src/transport.c $(LDFLAGS)
 
 settings: $(SET)
 	./$(SET)
