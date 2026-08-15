@@ -68,9 +68,8 @@ def _cmd_status(_cfg: Config, args: argparse.Namespace) -> int:
         return 0
 
     agg = snap.get("aggregate", {})
-    link = "tls" if snap.get("tls") else "plain"
     print(f"{agg.get('state', '?'):<6} {agg.get('reason', '')}")
-    print(f"broker  {snap.get('broker', '?')} ({link})")
+    print(f"transport  {snap.get('transport', '?')}")
     print(f"config  {snap.get('config_source', '?')}")
     sessions = snap.get("sessions", {})
     if not sessions:
@@ -104,15 +103,24 @@ def _cmd_watch(_cfg: Config, args: argparse.Namespace) -> int:
 def _cmd_config(cfg: Config, _args: argparse.Namespace) -> int:
     b = cfg.broker
     print(f"source        {cfg.source}")
-    print(f"broker        {b.host}:{b.port}")
-    print(f"tls           {b.tls}")
-    print(f"auth          {'username ' + b.username if b.username else 'none'}")
-    print(f"topic prefix  {cfg.topic_prefix}")
+
+    # Only describe the transport in use. Printing broker settings for a wired device invites
+    # debugging the wrong half of the system, and printing its warnings is worse than useless.
+    if cfg.serial.enabled:
+        print(f"transport     serial {cfg.serial.port} at {cfg.serial.baud}")
+    else:
+        print(f"transport     mqtt {b.host}:{b.port}")
+        print(f"tls           {b.tls}")
+        print(f"auth          {'username ' + b.username if b.username else 'none'}")
+        print(f"topic prefix  {cfg.topic_prefix}")
+
     print(f"listen        {cfg.listen_host}:{cfg.listen_port}")
     print(f"session ttl   {cfg.session_ttl:g}s")
     print(f"status file   {status_path()}")
-    for w in b.warnings():
-        print(f"warning: {w}", file=sys.stderr)
+
+    if not cfg.serial.enabled:
+        for w in b.warnings():
+            print(f"warning: {w}", file=sys.stderr)
     return 0
 
 

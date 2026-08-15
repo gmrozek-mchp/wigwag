@@ -162,7 +162,7 @@ def test_ping_is_accepted_and_changes_nothing(rig):
     assert pub.published == []
 
 
-def test_snapshot_reports_sessions_and_broker(rig):
+def test_snapshot_reports_sessions_and_transport(rig):
     daemon, _pub, clock = rig
     daemon.handle_datagram(b"SET WAIT s1 Notification")
     clock.advance(5.0)
@@ -170,8 +170,8 @@ def test_snapshot_reports_sessions_and_broker(rig):
     assert snap["aggregate"]["state"] == "WAIT"
     assert snap["sessions"]["s1"]["state"] == "WAIT"
     assert snap["sessions"]["s1"]["age_s"] == 5.0
-    assert snap["broker"] == "localhost:1883"
-    assert snap["tls"] is False
+    # The transport actually in use, not merely what is configured.
+    assert snap["transport"] == "mqtt localhost:1883 (plain)"
 
 
 def test_snapshot_omits_expired_sessions(rig):

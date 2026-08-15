@@ -126,6 +126,13 @@ class Daemon:
 
     # -- introspection ---------------------------------------------------------
 
+    def _transport_label(self) -> str:
+        """One line describing the live transport, for `wigwag status`."""
+        if self._cfg.serial.enabled:
+            return f"serial {self._cfg.serial.port}"
+        b = self._cfg.broker
+        return f"mqtt {b.host}:{b.port} ({'tls' if b.tls else 'plain'})"
+
     def snapshot(self) -> dict[str, object]:
         """Current state plus per-session detail, for `wigwag status`."""
         now = self._clock()
@@ -142,8 +149,9 @@ class Daemon:
         return {
             "aggregate": agg.payload(),
             "sessions": sessions,
-            "broker": f"{self._cfg.broker.host}:{self._cfg.broker.port}",
-            "tls": bool(self._cfg.broker.tls),
+            # What is *actually* carrying the state, not what is merely configured. Reporting a
+            # broker while publishing over a wire is a small lie, and this is a status display.
+            "transport": self._transport_label(),
             "config_source": self._cfg.source,
         }
 

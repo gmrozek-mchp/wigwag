@@ -7,6 +7,62 @@ Entries record what was done, why, and — importantly — what was tried and re
 
 ---
 
+## 2026-08-15 — driving it with real Claude Code state, over both transports
+
+**Done** — no new features: this was bringing the whole stack up against *actual* hook events rather
+than synthetic datagrams, plus one honesty fix the run exposed.
+
+Both paths carried real state from this session:
+
+| path | result |
+|---|---|
+| hook → daemon → **serial** → device | `transport usb TRUSTED (ok)` |
+| hook → daemon → mosquitto → **fake module → AT** → device | `link LINKED (ok)`, `transport wifi TRUSTED (ok)` |
+
+The hooks turned out to be **already installed** in `.claude/settings.json`, so every turn of this
+session had been firing `wg-notify` into a daemon that was not listening — which is itself a quiet
+confirmation of Rule 3: months of no daemon, no visible effect, no noise. Verified directly too: exit
+0, empty stdout, with nothing on the far end.
+
+The tracked session id was this very conversation, and the retained payload on the broker read
+`{"reason":"PostToolUse","sessions":1,"state":"BUSY"}` — the lamp was reporting the tool call that was
+querying the lamp.
+
+### The best test was the one I did not plan
+
+The first Wi-Fi attempt failed with `errors 1..5` rather than timeouts. Cause: an earlier console test
+had saved `broker mqtt.home.lan`, and the device was faithfully trying to reach a host that does not
+exist. The whole stack behaved exactly as designed with nothing hand-held — module returns `ERROR`, the
+AT client backs off 2 → 4 → 8 s, transport stays `wifi untrusted`, lamps fail-visible. A better
+exercise of the error path than anything deliberate, and it only happened because the bench had real
+leftover state.
+
+### Two things I had said that were wrong
+
+- **The mock honours the device's broker host.** I had claimed it ignored `AT+MQTTC` in favour of its
+  own `--broker`. It does not, and the failure above is the proof. That makes it *more* faithful than
+  I credited: it can reproduce a wrong-hostname failure, which is a real class of field fault.
+- **`$TMPDIR` differs between sandboxed and unsandboxed shell invocations here.** I started background
+  processes with one value and looked for their logs under another, then concluded the fake module was
+  not running when it was. Fixed paths for anything long-lived from now on.
+
+### The latch got in the way, exactly as predicted
+
+Switching from the wire back to Wi-Fi needed a reset, because D117 latches. It behaved as designed and
+was mildly annoying in precisely the way the ADR says it will be — worth having *observed* once rather
+than only reasoned about, since a wall-powered unit will never meet it and a bench does constantly.
+
+### Fixed: the status display described a transport it was not using
+
+`wigwag status` printed `broker localhost:1883 (plain)` while publishing over serial, and
+`wigwag config` printed broker settings *and warnings* for a device with no broker. The snapshot now
+carries a `transport` label taken from the live configuration. Small, but a status display that
+misdescribes the system invites debugging the wrong half of it.
+
+**Tests** — 110 host tests. Firmware untouched, so its 8 392 checks stand.
+
+---
+
 ## 2026-08-15 — the USB claim latches, because the two transports are not the same question
 
 **Done** — **ADR-0021**, superseding ADR-0018's selection mechanics and its pin decision. D117, D118;
