@@ -17,20 +17,41 @@ LINK  := $(BUILD)/test_link
 LAMP  := $(BUILD)/test_lamp
 BTN   := $(BUILD)/test_button
 WDOG  := $(BUILD)/test_wdog
+CMD   := $(BUILD)/test_cmd
+LEDIT := $(BUILD)/test_lineedit
+SET   := $(BUILD)/test_settings
 SIM   := $(BUILD)/at_host
 SRCS  := test_rnwf_at.c ../src/rnwf_at.c
 DEPS  := ../src/rnwf_at.h ../src/rnwf_at_cmds.h
 
-.PHONY: all link lamp button wdog sim clean
-all: $(BIN) $(LINK) $(LAMP) $(BTN) $(WDOG)
+.PHONY: all link lamp button wdog cmd lineedit settings sim clean
+all: $(BIN) $(LINK) $(LAMP) $(BTN) $(WDOG) $(CMD) $(LEDIT) $(SET)
 	./$(BIN)
 	./$(LINK)
 	./$(LAMP)
 	./$(BTN)
 	./$(WDOG)
+	./$(CMD)
+	./$(LEDIT)
+	./$(SET)
 
 $(BIN): $(SRCS) $(DEPS) | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $(SRCS) $(LDFLAGS)
+
+settings: $(SET)
+	./$(SET)
+$(SET): test_settings.c ../src/settings.c ../src/settings.h ../src/cmd.c ../src/lamp.c | $(BUILD)
+	$(CC) $(CFLAGS) -o $@ test_settings.c ../src/settings.c ../src/cmd.c ../src/lamp.c $(LDFLAGS)
+
+lineedit: $(LEDIT)
+	./$(LEDIT)
+$(LEDIT): test_lineedit.c ../src/lineedit.c ../src/lineedit.h | $(BUILD)
+	$(CC) $(CFLAGS) -o $@ test_lineedit.c ../src/lineedit.c $(LDFLAGS)
+
+cmd: $(CMD)
+	./$(CMD)
+$(CMD): test_cmd.c ../src/cmd.c ../src/cmd.h ../src/lamp.c | $(BUILD)
+	$(CC) $(CFLAGS) -o $@ test_cmd.c ../src/cmd.c ../src/lamp.c $(LDFLAGS)
 
 wdog: $(WDOG)
 	./$(WDOG)

@@ -7,6 +7,100 @@ Entries record what was done, why, and — importantly — what was tried and re
 
 ---
 
+## 2026-08-14 — configuration over the console, and the shell that would not fit
+
+**Done** — `cmd.c` + `lineedit.c` + `console.c` + `settings.c` + `settings_store.c`: set the Wi-Fi
+network, broker, calibration and brightness over the console, stored in the partition ADR-0017's driver
+made writable. **ADR-0019**, D105–D110. D56's compile-time-only commissioning is superseded as the
+primary path; ADR-0012's SoftAP flow stays accepted for the phone-only case.
+
+### What the measurements said
+
+Asked whether we should just use Zephyr's shell. I had asserted "too big" from Kconfig arithmetic,
+which is not this project's standard, so I measured it:
+
+```
+CONFIG_SHELL=y                          region `RAM' overflowed by 464 bytes
+CONFIG_SHELL=y CONFIG_SHELL_MINIMAL=y   region `RAM' overflowed by 464 bytes
+```
+
+**It does not link.** ~4 KB against 3624 free — half the part's SRAM — and `SHELL_MINIMAL` changes
+nothing measurable because it trims buffers while the 2 KB thread stack dominates. It could be forced
+in by cutting the stack to ~768, but shell handlers format with `vsnprintf` and D78 measured that class
+of work at 860 bytes on main's 1024-byte stack; with no MPU (D80) the overflow would be silent
+corruption found later by `STACK_SENTINEL`. Not worth line editing.
+
+`funbiscuit/embedded-cli` was then suggested and is genuinely well-made — MIT, single header, no
+dependencies, and static allocation, so it clears Rule 5's no-allocation bar. Declined on two counts:
+its footprint is unpublished and history-dominated (estimated 4–7× the hand-rolled editor), and it is an
+*interactive* CLI that wants to own the stream — echoing, holding a prompt, interpreting escapes — while
+the primary consumer of this wire is a daemon whose writes would interleave with prompt redraws. It also
+replaces only the ~60 lines that tokenise, not the parts with judgement in them.
+
+The hand-rolled editor measured **112 bytes**.
+
+### Built to be swapped, because that was the instruction
+
+Three layers, narrow interfaces: `lineedit.c` (characters → lines, **the replaceable one**), `cmd.c`
+(vocabulary and validation), `console.c` (effects). The editor takes an injected output callback rather
+than calling `printk` — the same trick `struct rnwf_at_io` plays — so it has no Zephyr in it, it is
+host-tested, and swapping in embedded-cli later means replacing one file that emits "here is a complete
+line" events.
+
+### The bug the tests caught before hardware did
+
+`wigwag_state_parse()` **requires JSON**. It looks for a `"state"` key specifically so that
+`"reason":"WAIT for input"` cannot be misread as a state — so it correctly rejected a bare `BUSY` from
+the console, and four tests failed immediately.
+
+The lazy fix would have been a second parser, which is exactly what ADR-0018 says not to do. The real
+fix was that "one place a string becomes a state" means one *vocabulary*, not one function: the name
+table is now shared between `wigwag_state_parse()` (JSON, for MQTT) and `wigwag_state_parse_word()`
+(bare, for the console), with a test asserting the two entry points can never disagree.
+
+### Things that bit, in order
+
+- **`ID_PORT` collided with the vendor pack.** `pic32cm6408pl10048.h` has `#define ID_PORT (32)` — the
+  PORT peripheral's instance index. The compiler reported it as a syntax error *inside the pack header*,
+  which is a memorably unhelpful place to be sent for a name clash in my own enum. All the NVS ids are
+  `SET_ID_*` now.
+- **`zephyr/fs/nvs.h` is deprecated** in this tree; it is `zephyr/kvss/nvs.h`, same function names.
+- **`FIXED_PARTITION_*` macros are `__DEPRECATED_MACRO`** — `PARTITION_OFFSET`/`PARTITION_SIZE` now.
+  Caught by a build warning, not by me.
+- **Polling the console at 10 ms would have lost pasted input.** At 115200 a byte lands every 87 µs and
+  this SERCOM has no deep FIFO, so a 10 ms poll keeps the last byte of each interval. Typing survives
+  that; pasting a 63-character passphrase does not, and pasting is what people do. Receive is now
+  interrupt-driven into a 128-byte ring, same reasoning as D77.
+- **Two error messages were technically true and unhelpful.** `set port abc` reported "unknown key or
+  value out of range" when the key was fine, and an empty non-secret printed as a blank column that
+  reads like a broken `show`. Both fixed on hardware after seeing them.
+
+### Verified on silicon, end to end
+
+Set an SSID and a passphrase *with spaces*, `save`, `reboot` — banner came back
+`connecting to "MyNetwork" (passphrase set)`, broker and port intact. Adjusted `brightness 64` and
+`gain green 100`, saved, rebooted, and both survived (`brightness 64`, `gain 100/255/255`). `clear` plus
+reboot restored every default. `show` masks both secrets as `<set>`/`<unset>`. Every refusal names its
+own problem. `shwo<BS><BS>ow` executed `show`. A 200-character line answered `line too long, ignored`
+rather than storing 96 characters of it. `echo off` silenced the echo and left the responses.
+
+**Measured** — flash 32 328 B (52.62 %), RAM **5 224 B (63.77 %)**. The delta is +656 B of RAM:
+settings strings **302**, console ring and state **260**, line editor **112**, NVS bookkeeping **49**
+(from `ram_report`, not estimated). Headroom is now 2 968 bytes — still comfortable, but this is the
+first change that made the 8 KB budget feel like a budget, and ADR-0008 is worth re-reading before the
+next subsystem.
+
+**Host tests** — 7 890 checks, 0 failures: rnwf_at 100, link 25, lamp 1 438, button 23, wdog 6 159,
+cmd 79, lineedit 37, settings 29.
+
+**Still open**: a typed `state` does not mark the link trusted, so on a bare bench the fail-visible
+pattern wins over what you just set. That is correct per ADR-0007 and it is the seam where D104's
+transport selection will treat console traffic as the host heartbeat. A `lamp <which> <level>` override
+would make calibration usable on an unlinked bench and is the natural factory-test tool, but it means the
+device deliberately showing something untrue, which deserves its own thought rather than a hasty addition.
+
+---
+
 ## 2026-08-14 — an MCP2221A, one transport at a time, and a pin map that does not transfer
 
 **Decided** — ADR-0018, D101–D104. No code; the deliverable is a PCB-affecting decision recorded

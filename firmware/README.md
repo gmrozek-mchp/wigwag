@@ -220,6 +220,38 @@ const struct device *fl = DEVICE_DT_GET(DT_NODELABEL(nvmctrl));
 off_t off = PARTITION_OFFSET(storage_partition);   /* 0xf000, 4 KB, 8 pages */
 ```
 
+## The console
+
+Commands over the same UART the console prints on (ADR-0019). `help` lists them; the useful ones:
+
+```
+show                            settings, secrets masked
+set ssid MyNetwork              staged, not stored
+set pass correct horse battery   spaces are allowed in a passphrase
+save                            persist; Wi-Fi changes apply on reboot
+clear                           forget stored settings
+brightness 64                   applies now, persists on save
+gain green 100                  per-lamp calibration, applies now
+state BUSY                      drive the lamps directly
+echo off                        for a host program driving this port
+```
+
+Three things worth knowing:
+
+- **Stored settings beat build-time defaults.** Put defaults in `firmware/credentials.conf` (gitignored,
+  merged automatically, see `credentials.conf.example`); anything set over the console and saved wins
+  from then on, including across a reflash — the settings live in the storage partition, not the image.
+- **A typed `state` does not make the lamps trust it.** With nothing linked, the fail-visible pattern
+  still wins (ADR-0007), so on a bare bench you will not see the state you just set. That changes when
+  D104's transport selection treats console traffic as the host heartbeat.
+- **Over-long input is refused, not truncated**, so a too-long passphrase says `line too long, ignored`
+  rather than silently storing a wrong credential.
+
+Line editing is deliberately minimal — backspace works, arrow keys are inert, there is no history.
+Zephyr's shell was measured and does not link on this part (`RAM overflowed by 464 bytes`), and
+`lineedit.c` is isolated behind a "bytes in, lines out" interface so a richer CLI can replace that one
+file if it ever earns the RAM.
+
 ## Moving the Zephyr pin
 
 `firmware/west.yml` pins mainline to an explicit commit, deliberately, never floating (ADR-0006).

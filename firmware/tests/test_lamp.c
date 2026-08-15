@@ -382,9 +382,50 @@ static void test_parse_rejects_rather_than_guesses(void)
 	}
 }
 
+static void test_state_parse_word(void)
+{
+	enum wigwag_state st;
+
+	/* The console path: a bare word, not JSON. */
+	CHECK(wigwag_state_parse_word("IDLE", &st) && st == WIGWAG_IDLE, "word IDLE");
+	CHECK(wigwag_state_parse_word("BUSY", &st) && st == WIGWAG_BUSY, "word BUSY");
+	CHECK(wigwag_state_parse_word("WAIT", &st) && st == WIGWAG_WAIT, "word WAIT");
+	CHECK(wigwag_state_parse_word("ERROR", &st) && st == WIGWAG_ERROR, "word ERROR");
+
+	/* Uppercase, exact, no synonyms - the conventions say so and this is where it is enforced. */
+	CHECK(!wigwag_state_parse_word("busy", &st), "lowercase refused");
+	CHECK(!wigwag_state_parse_word("Busy", &st), "mixed case refused");
+	CHECK(!wigwag_state_parse_word("ERRORISH", &st), "prefix match refused");
+	CHECK(!wigwag_state_parse_word("BUS", &st), "truncation refused");
+	CHECK(!wigwag_state_parse_word("", &st), "empty refused");
+	CHECK(!wigwag_state_parse_word(NULL, &st), "NULL refused");
+	CHECK(!wigwag_state_parse_word("BUSY ", &st), "trailing space refused (caller must tokenise)");
+
+	/*
+	 * The two entry points must never disagree. The JSON one accepts what the word one accepts,
+	 * wrapped; nothing the word one rejects should sneak through as a bare JSON value.
+	 */
+	{
+		static const char *const names[] = { "IDLE", "BUSY", "WAIT", "ERROR" };
+		size_t i;
+
+		for (i = 0; i < 4; i++) {
+			char json[64];
+			enum wigwag_state a, b;
+
+			snprintf(json, sizeof(json), "{\"state\":\"%s\"}", names[i]);
+			CHECK(wigwag_state_parse_word(names[i], &a) &&
+			      wigwag_state_parse(json, &b) && a == b,
+			      "%s agrees between word and JSON entry points", names[i]);
+		}
+	}
+}
+
 int main(void)
 {
 	printf("lamp host tests\n");
+
+	test_state_parse_word();
 
 	test_idle_is_green_only_and_dim();
 	test_busy_breathes_yellow_only();

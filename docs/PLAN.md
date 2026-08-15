@@ -169,7 +169,7 @@ FET selection: logic-level N-channel, Vgs(th) low enough to fully enhance at 3.3
 | D33 | Hooks always `exit 0` and write **nothing** to stdout | settled |
 | D34 | Fail-visible: > 10 s without broker → amber flicker | settled |
 | D35 | Button publishes raw presses; the host decides meaning | settled |
-| **D56** | **Commissioning: compile-time Kconfig for v1; SoftAP provisioning via the module's own service for v1.1** (ADR-0012) | settled |
+| **D56** | **Commissioning: compile-time Kconfig for v1; SoftAP provisioning via the module's own service for v1.1** (ADR-0012). *Superseded as the primary path by D105 — configuration is set over the console and stored, and Kconfig now supplies only defaults. ADR-0012 stays accepted for the phone-only case, and D58's long-press stays reserved for it* | settled |
 | **D57** | **USB commissioning is impossible** — PL10 has no USB peripheral (Table 8-1). Would need an MCP2221A bridge and would reverse D24 | settled |
 | **D58** | Long-press the existing button enters provisioning mode; all three lamps cycle so the mode is unmistakable | settled |
 | **D59** | PCB must break out host UART (SERCOM0) to pads/header — bench commissioning at zero BOM cost | settled |
@@ -178,7 +178,7 @@ FET selection: logic-level N-channel, Vgs(th) low enough to fully enhance at 3.3
 | **D62** | **`AT+CFGCP` persists config to module NVM** (firmware v3.0+), so broker settings survive reboots and are entered once ever | settled |
 | **D63** | Broker field defaults to a **hostname**, not an IP — survives DHCP lease changes via router-registered local DNS | settled |
 | D36 | Generic push API (`wigwag set …`) for CI, PR bots, cron | settled |
-| D37 | Credentials in gitignored `firmware/credentials.conf` + `host/.env` | settled |
+| D37 | Credentials in gitignored `firmware/credentials.conf` + `host/.env`. On the device these are now **defaults only** (D108); `firmware/CMakeLists.txt` merges the file automatically when present, and `credentials.conf.example` documents it | built |
 | **D47** | **Works identically in the VS Code extension and the terminal** — hooks are a CLI-level feature and the extension bundles the CLI, so one implementation covers both | settled |
 | **D48** | **8 KB SRAM budget is a gated requirement**, enforced by `ram_report` in CI, not hoped for | settled |
 
@@ -233,6 +233,12 @@ FET selection: logic-level N-channel, Vgs(th) low enough to fully enhance at 3.3
 | **D102** | **Fit an `MCP2221A` USB-serial bridge** on the existing USB-C connector's D+/D-, `SERCOM1`, `VUSB` tied to 3V3 alongside `VDD`. Spends PL10's last SERCOM, so the product will never have I2C. Populated on the first build; **the console comes free** — a devicetree assignment, no firmware (ADR-0018) | settled |
 | **D103** | **`GP2` = `USBCFG`, `GP0` = `SSPND`, wired to MCU inputs** — hardware evidence that a live USB host is attached and that it has not suspended. Not decoration: they are what makes transport selection a reading rather than a guess, since a charger does not enumerate | settled |
 | **D104** | **One transport at a time, selected at boot from `USBCFG` plus a host heartbeat.** USB wins when a live host is present, else Wi-Fi/MQTT as today; no credentials needed on the wired path. Both transports live at once was rejected — two concurrent trust evaluations and a fail-visible rule spanning both is the complexity shape that produced D75 (ADR-0018) | settled |
+| **D105** | **Configuration over the console, hand-rolled in three layers** — `lineedit.c` (character editing, the replaceable layer), `cmd.c` (vocabulary and validation), `console.c` (effects). Zephyr's shell **does not link**: measured `RAM overflowed by 464 bytes`, ~4 KB against 3624 free. embedded-cli was assessed and declined — unpublished footprint, history-dominated, and an interactive prompt model that fights the machine half of a shared wire (ADR-0019) | built |
+| **D106** | **Backspace kept, history and completion not.** Retyping a 63-character passphrase after one typo is the real pain, and it costs five lines. Arrow keys are made *inert* — without an escape filter, Up inserts a literal `[A` into a passphrase | settled |
+| **D107** | **Over-long input is refused, never truncated**, at both layers (`LINEEDIT_TOO_LONG`, `settings_apply`). A silently shortened passphrase is stored, looks right, and fails association with nothing to point at — Rule 4 applied to input | settled |
+| **D108** | **Settings persist via NVS in the 4 KB storage partition; stored values beat build-time defaults.** NVS rather than a hand-rolled blob: the hard part is consistency across a power cut and even sector wear, not storing bytes. Costs **302 B of RAM** for the string cache, because NVS returns copies rather than addresses into mapped flash | built |
+| **D109** | **`set` stages, `save` commits, `brightness` and `gain` also apply immediately.** Calibration is judged by eye, so it must be visible before it is stored; a half-typed network stays recoverable. Replies say `(not saved)` so the distinction is visible rather than remembered | settled |
+| **D110** | **Secrets are never printed back** — `show` reports `<set>`/`<unset>` for the Wi-Fi passphrase and broker password, and unknown keys default to secret so the failure direction is printing less | settled |
 
 ---
 

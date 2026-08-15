@@ -89,6 +89,15 @@ struct lamp_frame lamp_render(enum wigwag_state state, bool linked, uint32_t now
  */
 bool wigwag_state_parse(const char *payload, enum wigwag_state *out);
 
+/**
+ * Match a bare state word: `BUSY`, not `{"state":"BUSY"}`.
+ *
+ * The console carries states as bare words (ADR-0018, D104) while MQTT carries JSON, and both share
+ * one vocabulary table — see lamp.c. Exact and uppercase: the conventions say four states, uppercase,
+ * no synonyms, and this is where that is enforced for the typed path.
+ */
+bool wigwag_state_parse_word(const char *word, enum wigwag_state *out);
+
 const char *wigwag_state_str(enum wigwag_state state);
 
 /**

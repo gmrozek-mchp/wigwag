@@ -12,12 +12,14 @@
 
 #include "button.h"
 #include "button_gpio.h"
+#include "console.h"
 #include "lamp.h"
 #include "lamp_pwm.h"
 #include "link.h"
 #include "rnwf_at.h"
 #include "rnwf_at_cmds.h"
 #include "rnwf_uart.h"
+#include "settings_store.h"
 #include "wdog.h"
 #include "wdog_wdt.h"
 
@@ -33,20 +35,20 @@ static struct rnwf_at at_client;
 static struct link link_state;
 static struct button button_state;
 
-static const struct rnwf_at_config module_cfg = {
-	/*
-	 * Compile-time credentials for v1 (D56, ADR-0012). These placeholders are replaced by
-	 * Kconfig from a gitignored credentials.conf before this talks to a real access point.
-	 */
-	.ssid = "wigwag-test",
-	.passphrase = "",
-	.sec_type = RNWF_SEC_OPEN,
+/*
+ * Live settings: build-time defaults from Kconfig, overlaid by whatever is stored, editable over the
+ * console (D37/D56). Static because the AT client borrows pointers into it and never copies.
+ */
+static struct wigwag_settings settings;
 
-	.broker_host = "localhost",
-	.broker_port = 1883,
-	.client_id = "wigwag-1",
-	.username = NULL,
-	.password = NULL,
+/*
+ * The AT client's view of those settings.
+ *
+ * Not const any more, and the strings now point into `settings` rather than at flash literals — which
+ * is what makes them configurable without a rebuild, and what costs ~300 bytes of RAM (settings.h).
+ * The topic names stay literals: they are the protocol (CONTEXT.md), not configuration.
+ */
+static struct rnwf_at_config module_cfg = {
 	.keep_alive_s = 60,
 
 	.state_topic = "wigwag/state",
@@ -54,6 +56,25 @@ static const struct rnwf_at_config module_cfg = {
 	.host_online_topic = "wigwag/host_online",
 	.brightness_topic = "wigwag/brightness",
 };
+
+/** Point the AT configuration at the loaded settings. An empty field means "not configured". */
+static void module_cfg_from_settings(void)
+{
+	module_cfg.ssid = settings.ssid;
+	module_cfg.passphrase = settings.pass;
+	module_cfg.sec_type = settings.sec;
+	module_cfg.broker_host = settings.broker;
+	module_cfg.broker_port = settings.port;
+	module_cfg.client_id = settings.client;
+
+	/*
+	 * NULL rather than "" for the optional pair: rnwf_at.c skips the configuration step entirely
+	 * when these are NULL, and sending an empty username to a broker that wants none is not the
+	 * same as not sending one.
+	 */
+	module_cfg.username = (settings.user[0] != '\0') ? settings.user : NULL;
+	module_cfg.password = (settings.mqttpass[0] != '\0') ? settings.mqttpass : NULL;
+}
 
 /*
  * Build {"event":"press","ms":<n>} without printf.
@@ -267,6 +288,13 @@ static void at_service(bool at_ready)
 			}
 		}
 
+		/*
+		 * Commands arrive on the console UART, drained here rather than on their own thread —
+		 * the bytes are already buffered by an ISR, so this is only parsing, and a keystroke
+		 * waiting up to 10 ms is imperceptible.
+		 */
+		console_poll();
+
 		link_tick(&link_state, (uint32_t)k_uptime_get());
 		lamp_pwm_set_link(link_is_trusted(&link_state));
 
@@ -318,9 +346,31 @@ int main(void)
 	 */
 	(void)k_thread_name_set(k_current_get(), "at");
 
+	/*
+	 * Settings before anything that uses them. A failed mount is reported and survivable: the
+	 * build-time defaults stand, and a light running on stale configuration beats one that refuses
+	 * to boot (settings_store.h).
+	 */
+	{
+		int ret = settings_load(&settings);
+
+		if (ret != 0) {
+			printk("wigwag: settings store unavailable (%d), using defaults\n", ret);
+		}
+		module_cfg_from_settings();
+	}
+
 	if (lamp_pwm_init() != 0) {
 		return -ENODEV;
 	}
+
+	/* Calibration and brightness are settings, so apply them before the first frame is judged. */
+	lamp_pwm_set_brightness(settings.brightness);
+	for (size_t i = 0; i < LAMP_COUNT; i++) {
+		lamp_pwm_set_gain((enum lamp_id)i, settings.gain[i]);
+	}
+
+	(void)console_init(&settings);
 
 	link_init(&link_state, LINK_HOST_GRACE_MS);
 
@@ -332,7 +382,8 @@ int main(void)
 
 	at_ready = (rnwf_uart_init(&at_client, &module_cfg, &cb) == 0);
 	if (at_ready) {
-		printk("wigwag: module UART up, connecting to \"%s\"\n", module_cfg.ssid);
+		printk("wigwag: module UART up, connecting to \"%s\" (%s)\n", module_cfg.ssid,
+		       (settings.pass[0] != '\0') ? "passphrase set" : "open");
 		rnwf_at_start(&at_client, (uint32_t)k_uptime_get());
 	}
 

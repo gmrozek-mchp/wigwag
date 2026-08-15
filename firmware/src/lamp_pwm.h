@@ -40,4 +40,13 @@ void lamp_pwm_set_brightness(uint8_t brightness);
 /** Update the link condition. False overrides every state with the fail-visible pattern. */
 void lamp_pwm_set_link(bool trusted);
 
+/**
+ * Set one lamp's calibration gain, 0-255.
+ *
+ * Devicetree supplies the starting values (D91) and remains the record of what a *board* needs, but
+ * calibration is judged by eye on an assembled unit — which is impossible if changing it requires a
+ * rebuild. The console sets this live and the settings store remembers it (D37/D56).
+ */
+void lamp_pwm_set_gain(enum lamp_id lamp, uint8_t gain);
+
 #endif /* LAMP_PWM_H */

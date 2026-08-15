@@ -112,17 +112,50 @@ struct lamp_frame lamp_render(enum wigwag_state state, bool linked, uint32_t now
 	return f;
 }
 
+/*
+ * The state vocabulary, in exactly one place.
+ *
+ * Two carriers reach it by different routes — MQTT delivers a JSON payload, the console delivers a
+ * bare word (ADR-0018, D104) — and both must agree on what the four legal states are spelled like.
+ * Two tables would be two chances to drift, so there is one table and two entry points.
+ */
+static const struct state_name {
+	const char *name;
+	enum wigwag_state state;
+} state_names[] = {
+	{ "IDLE", WIGWAG_IDLE },
+	{ "BUSY", WIGWAG_BUSY },
+	{ "WAIT", WIGWAG_WAIT },
+	{ "ERROR", WIGWAG_ERROR },
+};
+
+#define N_STATE_NAMES (sizeof(state_names) / sizeof(state_names[0]))
+
+bool wigwag_state_parse_word(const char *word, enum wigwag_state *out)
+{
+	size_t i;
+
+	if (word == NULL || out == NULL) {
+		return false;
+	}
+
+	/*
+	 * Exact match, uppercase only. `CONTEXT.md` and the conventions both say the states are
+	 * uppercase with no synonyms, and a console that accepted `busy` would soon be asked to accept
+	 * `Busy`, then `working`.
+	 */
+	for (i = 0; i < N_STATE_NAMES; i++) {
+		if (strcmp(word, state_names[i].name) == 0) {
+			*out = state_names[i].state;
+			return true;
+		}
+	}
+
+	return false;
+}
+
 bool wigwag_state_parse(const char *payload, enum wigwag_state *out)
 {
-	static const struct {
-		const char *name;
-		enum wigwag_state state;
-	} table[] = {
-		{ "IDLE", WIGWAG_IDLE },
-		{ "BUSY", WIGWAG_BUSY },
-		{ "WAIT", WIGWAG_WAIT },
-		{ "ERROR", WIGWAG_ERROR },
-	};
 	const char *p;
 	size_t i;
 
@@ -155,10 +188,10 @@ bool wigwag_state_parse(const char *payload, enum wigwag_state *out)
 		p++;
 	}
 
-	for (i = 0; i < sizeof(table) / sizeof(table[0]); i++) {
-		size_t n = strlen(table[i].name);
+	for (i = 0; i < N_STATE_NAMES; i++) {
+		size_t n = strlen(state_names[i].name);
 
-		if (strncmp(p, table[i].name, n) == 0) {
+		if (strncmp(p, state_names[i].name, n) == 0) {
 			/*
 			 * Require a terminator, so "ERRORISH" is rejected rather than read as ERROR.
 			 */
@@ -166,7 +199,7 @@ bool wigwag_state_parse(const char *payload, enum wigwag_state *out)
 
 			if (after == '"' || after == '\0' || after == ',' || after == '}' ||
 			    after == ' ') {
-				*out = table[i].state;
+				*out = state_names[i].state;
 				return true;
 			}
 		}

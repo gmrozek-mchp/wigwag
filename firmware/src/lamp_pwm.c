@@ -34,8 +34,13 @@ static const struct pwm_dt_spec lamps[LAMP_COUNT] = {
 	[LAMP_RED] = PWM_DT_SPEC_GET(DT_ALIAS(lamp_red)),
 };
 
-/* Per-lamp calibration, a board property (wigwag,lamps binding). Not runtime state. */
-static const uint8_t lamp_gain[LAMP_COUNT] = {
+/*
+ * Per-lamp calibration. Devicetree (the wigwag,lamps binding, D91) supplies the starting values and
+ * stays the record of what a board needs; these are no longer const because calibration is judged by
+ * eye on a built unit, and a value you must rebuild to change cannot be judged by eye at all. The
+ * console writes them and settings_store.c remembers them.
+ */
+static uint8_t lamp_gain[LAMP_COUNT] = {
 	[LAMP_GREEN] = DT_PROP(DT_ALIAS(lamp_green), gain),
 	[LAMP_YELLOW] = DT_PROP(DT_ALIAS(lamp_yellow), gain),
 	[LAMP_RED] = DT_PROP(DT_ALIAS(lamp_red), gain),
@@ -195,6 +200,24 @@ void lamp_pwm_set_state(enum wigwag_state state)
 		shared.state_since_ms = (uint32_t)k_uptime_get();
 	}
 
+	k_spin_unlock(&shared.lock, key);
+}
+
+void lamp_pwm_set_gain(enum lamp_id lamp, uint8_t gain)
+{
+	k_spinlock_key_t key;
+
+	if (lamp >= LAMP_COUNT) {
+		return;
+	}
+
+	/*
+	 * Under the same lock as the rest of the shared state even though it is one byte: the render
+	 * thread reads it every frame, and a torn read would be a visible flicker on a device whose
+	 * whole job is to be believed.
+	 */
+	key = k_spin_lock(&shared.lock);
+	lamp_gain[lamp] = gain;
 	k_spin_unlock(&shared.lock, key);
 }
 

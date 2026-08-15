@@ -7,6 +7,13 @@ cmake_minimum_required(VERSION 3.20.0)
 # upstream PR will be. Must come before find_package(Zephyr).
 list(APPEND ZEPHYR_EXTRA_MODULES ${CMAKE_CURRENT_SOURCE_DIR}/modules/pic32cm-pl-nvmctrl)
 
+# Gitignored credentials, merged automatically when present so `west build` needs no extra flags
+# (D37). These are build-time *defaults*; stored settings win at runtime — see settings_store.c.
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/credentials.conf)
+  list(APPEND EXTRA_CONF_FILE ${CMAKE_CURRENT_SOURCE_DIR}/credentials.conf)
+  message(STATUS "wigwag: merging credentials.conf")
+endif()
+
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(wigwag)
 
@@ -19,6 +26,11 @@ target_sources(app PRIVATE
   src/button_gpio.c # the polled GPIO binding
   src/lamp.c        # pure animation: (state, link, time) -> three levels
   src/lamp_pwm.c    # the Zephyr renderer: gamma, polarity, its own thread
+  src/cmd.c         # pure command vocabulary and validation
+  src/lineedit.c    # pure line editing: bytes -> lines. The swappable layer (see lineedit.h)
+  src/console.c     # the Zephyr console adapter and command effects
+  src/settings.c    # pure settings value handling
+  src/settings_store.c  # persistence over NVS in the storage partition
   src/wdog.c        # pure liveness accounting: is every task that matters still beating?
   src/wdog_wdt.c    # the WDT peripheral, and the reset-cause report at boot
 )

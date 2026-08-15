@@ -1,0 +1,55 @@
+# Build-time defaults for wigwag's configurable settings.
+#
+# These are *defaults*, not the configuration. Anything stored in the device's storage partition wins
+# over them (settings_store.c), so a unit configured over the console keeps its settings across
+# reflashes. They exist for two reasons: a bench build can bake in a known-good network so it comes
+# up without typing anything, and a device that has never been configured has something coherent to
+# fall back on rather than empty strings.
+#
+# Put real values in `firmware/credentials.conf`, which is gitignored and merged automatically by
+# CMakeLists.txt when present. See credentials.conf.example. Never commit real credentials, and note
+# that anything set here is a plaintext string in the firmware image.
+
+menu "wigwag"
+
+config WIGWAG_SSID
+	string "Default Wi-Fi SSID"
+	default ""
+
+config WIGWAG_PASS
+	string "Default Wi-Fi passphrase"
+	default ""
+	help
+	  Leave empty for an open network. WPA-2 allows up to 63 characters.
+
+config WIGWAG_SEC
+	int "Default Wi-Fi security type (enum rnwf_sec_type)"
+	default 0
+	range 0 6
+
+config WIGWAG_BROKER
+	string "Default MQTT broker hostname"
+	default "localhost"
+	help
+	  A hostname by preference rather than an address, per ADR-0013.
+
+config WIGWAG_PORT
+	int "Default MQTT broker port"
+	default 1883
+	range 1 65535
+
+config WIGWAG_CLIENT
+	string "Default MQTT client id"
+	default "wigwag-1"
+
+config WIGWAG_USER
+	string "Default MQTT username"
+	default ""
+
+config WIGWAG_MQTTPASS
+	string "Default MQTT password"
+	default ""
+
+endmenu
+
+source "Kconfig.zephyr"
