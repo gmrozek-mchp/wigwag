@@ -7,6 +7,98 @@ Entries record what was done, why, and — importantly — what was tried and re
 
 ---
 
+## 2026-08-15 — the transport becomes a setting, and the session's documentation is squared up
+
+**Done** — **ADR-0022**, D119/D120. Transport selection is now a stored setting; ADR-0021 is superseded
+outright and ADR-0018's selection with it. Then a documentation sweep, since three designs in two days
+left claims scattered across five files.
+
+### Third time, and the first two failed the same way
+
+Selection started as *inference* (D104: whoever talks, wins), then became *inference plus a latch*
+(D117: first to talk keeps it until reset). Challenged on the second, with the observation that brings
+the whole thing down: **bringing up a daemon on USB should not automatically take over from Wi-Fi.**
+
+It should not, and the reason both attempts were wrong is that the choice is not something to detect.
+**ADR-0013 had already settled this exact shape** — "the broker address is configured, not
+auto-discovered" — and transport selection should have followed that precedent from the first line.
+Worth recording as a pattern I missed rather than a one-off: when a decision is about *intent*, the
+project's own answer is configuration.
+
+The latch made it worse rather than better, too. Automatic takeover is surprising; automatic *and
+irreversible* means a cable plugged in for power or configuration repurposes the device with no way back
+short of a power cycle.
+
+So: `set transport usb|wifi`, stored, shown first by `show` because it decides what the device is.
+Nothing the outside world does can change it. `transport.c` now answers only "may the configured
+transport be believed", which is the part that genuinely depends on evidence — and it lost the latch,
+the release window, `usb_claimed_ms` and the handover counting along the way.
+
+### Defaulting to the wire, on a good argument
+
+Asked what a fresh device does, I had it defaulting to Wi-Fi. Wrong, and the reasoning is clean: **Wi-Fi
+cannot work until an SSID and passphrase are set**, so anyone using it is already configuring the device
+and can set the transport in the same sitting. The wire needs nothing. The default should be the
+transport that works out of the box — plug it into a computer, run the daemon, done (D120).
+
+That creates exactly one footgun: set an SSID, reboot, and a wired device ignores the network you just
+configured. So the console says so at the moment it happens, and the boot banner repeats it. A silent
+footgun would have been the real cost of this default; a loud one is fine.
+
+### A bug found by being asked a question
+
+Asking what counted as a heartbeat turned up that `host off` claimed the device. On a unit that had never
+seen a host, a bare `host off` would latch it to USB *and* immediately distrust it — a message meaning
+"there is no host" bricking the display until reset. `cmd_is_host_activity()` now takes the whole command
+rather than the kind, so `host on` claims and `host off` cannot.
+
+### And one from operating it
+
+The board went dark mid-session. Cause: **`west flash` leaves the target halted**, and the `pyocd reset`
+that normally follows was inside a command that got cancelled. Then reflashing brought it back, but not
+before I misread a `pyocd cmd` register dump as evidence the core had crashed — `pyocd cmd` *halts the
+target on connect*, so that reading was self-inflicted. Two things worth remembering: always reset after
+flashing, and any pyocd inspection command halts what it inspects.
+
+### Documentation squared up
+
+Three designs in two days left stale claims in five files. Swept: `CONTEXT.md`'s protocol section said the
+device chose "from evidence, not configuration" — the exact opposite of the truth; ADR-0018 and ADR-0021
+are marked superseded with their reasoning intact rather than rewritten (Rule 2);
+`docs/usb-serial-and-bootloader.md` had a whole "Decided" section describing the first design; D103, D104,
+D112 and D117 are marked withdrawn or superseded in the register; the plan's phase list had eleven items
+complete but unticked, and now names item 18 as the only outstanding Phase 2 work plus what was built
+beyond the original plan.
+
+`firmware/README.md` now carries the **complete console reference**, generated from `cmd.c`'s own tables
+so it cannot drift — all twelve verbs and all nine `set` keys, which is more than the previous
+hand-written list had.
+
+**Measured** — flash 33 716 B (54.88 %), RAM 5 248 B (64.06 %).
+
+**Tests** — 8 154 firmware checks, 110 host tests. The firmware count *fell* from 8 392 because the
+transport suite shrank from 484 checks to 235: there is much less behaviour to pin down when selection
+is a setting.
+
+### Where the next session should start
+
+Read this entry, then the decision register. The state of things:
+
+- **Phase 2 is complete except item 18**, real module bring-up, blocked on the `EV72E72A`. Everything to
+  date runs against `sim/fake_rnwf02.py` — which turned out more faithful than assumed, since it honours
+  the broker hostname the device asks for and reproduced a resolve failure convincingly.
+- **Both transports are proven on hardware with real Claude Code state**, hook → daemon → wire, and
+  hook → daemon → broker → fake module → AT.
+- **Five upstream Zephyr findings plus the flash driver** are written up with commit messages and
+  maintainer routing in `docs/upstreaming-to-zephyr.md`, none filed. Bug 5 first, since the driver
+  contribution depends on it.
+- **Phase 3 pin assignment** must be redone against the 28-pin pinout (D101), now needing two fewer pins
+  than yesterday (D116).
+- **RAM is at 64 %**, 2 944 bytes free. ADR-0008 made 8 KB deliberate; worth re-reading before the next
+  subsystem rather than after.
+
+---
+
 ## 2026-08-15 — driving it with real Claude Code state, over both transports
 
 **Done** — no new features: this was bringing the whole stack up against *actual* hook events rather

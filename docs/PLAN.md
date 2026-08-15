@@ -231,8 +231,8 @@ FET selection: logic-level N-channel, Vgs(th) low enough to fully enhance at 3.3
 | **D100** | **A bootloader, if built, is a developer convenience and bare-metal** — a stripped-down Adafruit-derived SAM-BA monitor targeting Zephyr's in-tree `bossac` runner, not MCUboot and not a Zephyr app. UF2 itself is impossible: PL10 has no USB peripheral, and the MCP2221A cannot lend one. `__VTOR_PRESENT = 1`, so a relocated app is viable (`docs/usb-serial-and-bootloader.md`) | spike |
 | **D101** | **The 28-pin target package does not have the cnano's pins.** `PB02` (lamp WO2) and `PB00`/`PB01` (console) do not exist on `PIC32CM6408PL10028` at all. Everything still fits — TCC0 WO0/WO1/WO2 on `PA00/01/02`, `PA08/09/10`, or `PA24/PA25/PA18`; SERCOM1 on `PA00/PA01` (mux D) or `PA10/PA11` (mux C) — but D49's specific mapping is cnano-only and the Phase 3 pin assignment must be redone against the 28-pin pinout | settled |
 | **D102** | **Fit an `MCP2221A` USB-serial bridge** on the existing USB-C connector's D+/D-, `SERCOM1`, `VUSB` tied to 3V3 alongside `VDD`. Spends PL10's last SERCOM, so the product will never have I2C. Populated on the first build; **the console comes free** — a devicetree assignment, no firmware (ADR-0018) | settled |
-| **D103** | **`GP2` = `USBCFG`, `GP0` = `SSPND`, wired to MCU inputs** — hardware evidence that a live USB host is attached and that it has not suspended. Not decoration: they are what makes transport selection a reading rather than a guess, since a charger does not enumerate | settled |
-| **D104** | **Built.** **One transport at a time, selected from `USBCFG` plus a host heartbeat.** USB wins when a live host is present, else Wi-Fi/MQTT as today; no credentials needed on the wired path. Both transports live at once was rejected — two concurrent trust evaluations and a fail-visible rule spanning both is the complexity shape that produced D75 (ADR-0018) | settled |
+| **D103** | *Withdrawn by D116 — the pins are not wired.* `GP2` = `USBCFG`, `GP0` = `SSPND` — hardware evidence that a live USB host is attached and that it has not suspended. Not decoration: they are what makes transport selection a reading rather than a guess, since a charger does not enumerate | withdrawn |
+| **D104** | *Superseded by D119.* One transport at a time, selected from evidence rather than configuration | superseded |
 | **D105** | **Configuration over the console, hand-rolled in three layers** — `lineedit.c` (character editing, the replaceable layer), `cmd.c` (vocabulary and validation), `console.c` (effects). Zephyr's shell **does not link**: measured `RAM overflowed by 464 bytes`, ~4 KB against 3624 free. embedded-cli was assessed and declined — unpublished footprint, history-dominated, and an interactive prompt model that fights the machine half of a shared wire (ADR-0019) | built |
 | **D106** | **Backspace kept, history and completion not.** Retyping a 63-character passphrase after one typo is the real pain, and it costs five lines. Arrow keys are made *inert* — without an escape filter, Up inserts a literal `[A` into a passphrase | settled |
 | **D107** | **Over-long input is refused, never truncated**, at both layers (`LINEEDIT_TOO_LONG`, `settings_apply`). A silently shortened passphrase is stored, looks right, and fails association with nothing to point at — Rule 4 applied to input | settled |
@@ -245,8 +245,10 @@ FET selection: logic-level N-channel, Vgs(th) low enough to fully enhance at 3.3
 | **D114** | **`pyserial` on every platform, lazily imported, as an optional extra** (`wigwagd[serial]`) rather than `termios` on POSIX and `pyserial` on Windows. A split backend would make Windows the *untested* path while development happens on macOS, and it saves nothing — Windows needs the dependency either way. Lazy import keeps D31's property that the test suite runs with nothing installed (ADR-0020) | built |
 | **D115** | **Serial port discovery is opt-in and refuses to guess.** `port = "auto"` matches the MCP2221A's factory USB identity, VID `0x04D8` / PID `0x00DD` (datasheet Registers 1-5 to 1-8); zero or several matches is an error. A daemon that silently picked the first of two serial ports would eventually drive somebody's 3D printer | built |
 | **D116** | **`USBCFG`/`SSPND` are not wired to the MCU; D103 is withdrawn.** The device is USB-powered (ADR-0009) so an unplugged cable is a power-off, not an observable deassert; suspend does not *unconfigure*, so only `SSPND` sees it, and `SSPND` needs per-unit chip-settings programming (`LED_URx` is GP0's default). Its one real use was accelerating a release window that D117 removes. Received bytes are necessary *and* sufficient. `GP0`/`GP1` still default to `LED_URx`/`LED_UTx`, so two LEDs remain free if a visible activity indicator is wanted | settled |
-| **D117** | **The USB claim latches until reset.** The two transports do not carry the same information — a daemon aggregates *its own machine's* sessions (D30) — so falling back to Wi-Fi would silently answer a different question rather than recover. Trust still tracks the heartbeat, so a quiet host means amber; the *choice* never reverts. Escaping needs a reset, and since the cable carries the power, unplugging is one. `host off` drops trust without releasing (ADR-0021) | built |
-| **D118** | **Module service stops entirely once USB latches** — resolves Q3. Both `rnwf_uart_poll()` and `rnwf_at_tick()`: draining without ticking would keep feeding MQTT states to the lamps, which is the substitution the latch prevents. Also ends the waste an end-to-end session measured at 947 AT timeouts. The module may stay associated; nothing reads it | built |
+| **D117** | *Superseded by D119.* The USB claim latches until reset | superseded |
+| **D118** | **A wired device never starts the module at all** — resolves Q3. Originally "stop servicing it once USB latches"; with the transport a setting (D119) it is simply never brought up, which is stronger. Not only to save the waste an end-to-end session measured at 947 AT timeouts, but because a running, subscribed module would deliver MQTT states to the lamps — the substitution D119 exists to prevent | built |
+| **D119** | **The transport is a stored setting, not an inference** — `set transport usb\|wifi`, shown first by `show`. Nothing the outside world does can change it: console traffic cannot take the lamps from a wireless device, and a Wi-Fi link cannot take them from a wired one. Both earlier designs (D104 infer, D117 latch) let a cable plugged in for power or configuration silently repurpose the device. ADR-0013 had already settled this shape for the broker address and this should have followed it (ADR-0022) | built |
+| **D120** | **A fresh device defaults to `usb`.** Wi-Fi cannot work until an SSID and passphrase are set, so anyone using it is already configuring and can set the transport at the same time; the wire needs nothing. The one easy mistake — setting an SSID on a wired device — is called out by the console at the moment it happens and repeated in the boot banner | built |
 
 ---
 
@@ -293,7 +295,7 @@ by code.
 | **Used / available** | **~17 of 28** |
 
 `USBCFG`/`SSPND` were budgeted here and are now withdrawn (D116): received bytes are necessary and
-sufficient, and the latch (D117) removed the release window they existed to accelerate.
+sufficient, and once the transport became a stored setting (D119) the pins had nothing left to do.
 
 Still comfortable, with margin for the module's `UART2_TX` debug line and a board status LED.
 
@@ -408,15 +410,15 @@ wigwag/
 Remaining Phase 0 loose end: nothing is committed to git yet (D16).
 
 ### Phase 1 — Host software (no hardware needed)
-6. `brew install mosquitto`, local broker with username/password.
-7. `wigwagd`: AF_UNIX listener, session table + TTL, priority aggregation, retained publish,
+6. ✅ `brew install mosquitto`, local broker with username/password.
+7. ✅ `wigwagd`: UDP listener, session table + TTL, priority aggregation, retained publish,
    subscribe to `wigwag/button`, coalesce heartbeat bursts.
-8. `wg-notify` hook client: POSIX sh, `sed` out `session_id`, one datagram via `nc -U`.
-9. `wigwag` CLI: `set|get|status|watch`.
-10. Install hooks; verify with `mosquitto_sub -t 'wigwag/#' -v` against a real session driven
+8. ✅ `wg-notify` hook client: POSIX sh, `sed` out `session_id`, one datagram via `nc -U`.
+9. ✅ `wigwag` CLI: `set|get|status|watch`.
+10. ✅ Install hooks; verify with `mosquitto_sub -t 'wigwag/#' -v` against a real session driven
     through IDLE → BUSY → WAIT → IDLE. Confirm identical behavior in the VS Code extension and
     a terminal session (D47).
-11. Tests: aggregation priority, TTL expiry, hook latency, daemon-down path.
+11. ✅ Tests: aggregation priority, TTL expiry, hook latency, daemon-down path.
 
 ### Phase 2 — Firmware
 12. ✅ Zephyr workspace, `west init`, mainline + `hal_microchip` (D64, D65, ADR-0014); `blinky`
@@ -427,20 +429,33 @@ Remaining Phase 0 loose end: nothing is committed to git yet (D16).
     LED on a PL10 Curiosity Nano.
     Done in `firmware/boards/pic32cm_pl10_cnano.overlay` — mainline needed **no** change, since
     the whole gap was the missing devicetree nodes. Visual confirmation still outstanding.
-14. `rnwf_at.c`: bounded ring-buffer line assembly, request/response with timeouts, unsolicited
+14. ✅ `rnwf_at.c`: bounded ring-buffer line assembly, request/response with timeouts, unsolicited
     result dispatch, connect state machine (reset → AT → Wi-Fi → MQTT → subscribe) with backoff.
     Core written free of Zephyr headers so it unit-tests under plain clang on macOS (D66).
-15. `sim/fake_rnwf02.py` — AT server + `paho-mqtt` bridge on the host, wired to the cnano's
+15. ✅ `sim/fake_rnwf02.py` — AT server + `paho-mqtt` bridge on the host, wired to the cnano's
     SERCOM0 through a 3.3 V USB-UART adapter, tested against the real broker. **Not `native_sim`:**
     Zephyr's POSIX architecture does not work on macOS (D66, ADR-0015).
-16. `lamp.c`: 3 PWM channels, ~100 Hz render, gamma-corrected steady/breathe/blink/flicker.
+16. ✅ `lamp.c`: 3 PWM channels, ~100 Hz render, gamma-corrected steady/breathe/blink/flicker.
 17. `button.c` (debounce + publish) and `link.c` (supervision → amber flicker, WDT). **Done** — plus
     brightness (D88–D90), `wigwag/online` (D92) and the watchdog (ADR-0016, D93–D95).
     `link.c` done and verified across all three failure domains (D75). `button.c` done and verified
     on hardware — 14 presses, no duplicates, long-hold at 3 s — but **polled rather than
     interrupt-driven** (D86), since PL10 has no `eic` node. The WDT is the remaining piece.
 18. Hardware bring-up: `EV10P22A` + `EV72E72A`, five jumpers (TX, RX, MCLR, 3V3, GND).
-19. **Record `ram_report`/`rom_report`** in the journal; confirm the 8 KB budget holds (D48).
+    **The only Phase 2 item still outstanding**, blocked on the `EV72E72A`. Everything to date runs
+    against `sim/fake_rnwf02.py`; it settles whether the real module honours `AT+MQTTLWT` and how it
+    escapes quotes inside quoted AEC fields (which decides whether the JSON `wigwag/state` payload is
+    safe to parse as-is).
+
+**Added beyond the original plan**, all built and on hardware — see the decision register:
+
+- watchdog with earned feeding (ADR-0016)
+- a flash driver for PL10's NVMCTRL, as an out-of-tree Zephyr module (ADR-0017)
+- an `MCP2221A` USB-serial bridge on the PCB (ADR-0018)
+- configuration over the console, with settings in flash (ADR-0019)
+- a serial transport for the daemon (ADR-0020)
+- one transport at a time, chosen by a stored setting (ADR-0022)
+19. ✅ **Record `ram_report`/`rom_report`** in the journal; confirm the 8 KB budget holds (D48).
 
 ### Phase 3 — PCB (KiCad 9, 4-layer)
 20. Schematic: PL10 SSOP-28 + RNWF02PC + MCP1826 + USB-C power-only + 3 lamp channels with
@@ -504,15 +519,15 @@ numbers, stock and design traps are in [`usb-serial-and-bootloader.md`](usb-seri
 
 | # | Question | Where it stands |
 |---|---|---|
-| Q1 | Add an `MCP2221A` USB-serial bridge? | **Resolved 2026-08-14 — yes, fitted and populated.** D102/D103, ADR-0018 |
-| Q2 | Is USB a peer to MQTT, a variant, or diagnostics only? | **Resolved 2026-08-14 — one transport at a time, chosen from `USBCFG`.** D104, ADR-0018 |
+| Q1 | Add an `MCP2221A` USB-serial bridge? | **Resolved 2026-08-14 — yes, fitted and populated.** D102, ADR-0018 (D103's status pins withdrawn, D116) |
+| Q2 | Is USB a peer to MQTT, a variant, or diagnostics only? | **Resolved — one transport at a time, chosen by a stored setting.** D119/D120, ADR-0022 (via D104 and D117, both superseded) |
 
 Both resolved: the wire protocol is in `CONTEXT.md`, and the dependency question is D114/ADR-0020.
 
 | # | Question | Where it stands |
 |---|---|---|
-| Q3 | Should the AT client keep retrying Wi-Fi while USB holds the device? | **Resolved 2026-08-15 — no, stopped entirely.** D118. The latch made it unambiguous: there is no fallback for the module to be kept warm for |
-| Q4 | Drop `USBCFG`/`SSPND` from the pin plan? | **Resolved 2026-08-15 — dropped.** D116, and the latch removed their last purpose |
+| Q3 | Should the AT client keep retrying Wi-Fi on a wired device? | **Resolved 2026-08-15 — it is never started.** D118. With the transport configured (D119) there is no fallback the module could be kept warm for |
+| Q4 | Drop `USBCFG`/`SSPND` from the pin plan? | **Resolved 2026-08-15 — dropped.** D116: bytes are necessary and sufficient, and once the transport became a setting (D119) the pins had no remaining purpose at all |
 
 
 | # | Question | Assumption if unanswered |

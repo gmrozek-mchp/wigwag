@@ -222,35 +222,76 @@ off_t off = PARTITION_OFFSET(storage_partition);   /* 0xf000, 4 KB, 8 pages */
 
 ## The console
 
-Commands over the same UART the console prints on (ADR-0019). `help` lists them; the useful ones:
+Commands arrive on the same UART the console prints on, `\r\n` terminated (ADR-0019). This is the
+complete set — the device's own `help` prints the same list.
+
+| Command | Effect |
+|---|---|
+| `help` (or `?`) | list the commands |
+| `show` | print every setting; secrets shown only as `<set>`/`<unset>` |
+| `set <key> <value>` | stage one setting — see the keys below. Not stored until `save` |
+| `save` | persist the staged settings to flash |
+| `clear` | forget everything stored; reverts to build-time defaults |
+| `reboot` | restart, which is how Wi-Fi and `transport` changes take effect |
+| `state IDLE\|BUSY\|WAIT\|ERROR` | drive the lamps. Counts as host activity |
+| `brightness <0-255>` | master brightness, applies immediately, persists on `save` |
+| `gain green\|yellow\|red <0-255>` | per-lamp calibration, applies immediately, persists on `save` |
+| `echo on\|off` | stop echoing input — what a host program wants |
+| `host on\|off` | host liveness. `on` must repeat within 10 s to keep the wire trusted; `off` is an orderly goodbye |
+
+Keys for `set`:
+
+| Key | Value | Notes |
+|---|---|---|
+| `transport` | `usb` or `wifi` | **which side owns the lamps.** Reboot to apply. Defaults to `usb` |
+| `ssid` | up to 32 chars | |
+| `pass` | up to 63 chars | **may contain spaces** — the rest of the line is taken verbatim. Never printed back |
+| `sec` | 0–6 | `enum rnwf_sec_type`; 0 is open, 3 is WPA2 mixed personal |
+| `broker` | hostname, up to 64 chars | a hostname by preference (ADR-0013) |
+| `port` | 1–65535 | |
+| `client` | up to 32 chars | MQTT client id |
+| `user` | up to 32 chars | empty means no broker authentication |
+| `mqttpass` | up to 64 chars | never printed back |
+
+Things worth knowing:
+
+- **Only `host` and `state` count as host activity.** Configuration commands deliberately do not, so
+  someone setting up Wi-Fi over the console cannot be mistaken for a daemon driving the display
+  (D117 → ADR-0022).
+- **Over-long input is refused, not truncated** — `line too long, ignored` rather than silently storing
+  a wrong credential.
+- **Backspace works; arrow keys do nothing.** There is no history and no tab completion; Zephyr's shell
+  does not fit on this part (ADR-0019).
+- **`clear` does not reset `transport`** to anything other than the build-time default, which is `usb`.
+
+Line editing is deliberately minimal, and `lineedit.c` is isolated behind a "bytes in, lines out"
+interface so a richer CLI could replace that one file if it ever earned the RAM.
+
+### Which transport owns the lamps
+
+`transport` is the setting that decides what the device is (ADR-0022), and **nothing the outside world
+does can change it**: no amount of traffic on the console takes the lamps from a wireless device, and no
+Wi-Fi link takes them from a wired one. A configured transport that is not working shows the
+fail-visible pattern rather than quietly answering with the other one — the two do not report the same
+machine's work.
+
+A fresh device defaults to `usb`, because that is the transport needing no configuration (D120). So:
 
 ```
-show                            settings, secrets masked
-set ssid MyNetwork              staged, not stored
-set pass correct horse battery   spaces are allowed in a passphrase
-save                            persist; Wi-Fi changes apply on reboot
-clear                           forget stored settings
-brightness 64                   applies now, persists on save
-gain green 100                  per-lamp calibration, applies now
-state BUSY                      drive the lamps directly
-echo off                        for a host program driving this port
+# wired, out of the box: nothing to do but run the daemon
+WIGWAG_SERIAL_PORT=auto wigwagd
+
+# wireless
+set transport wifi
+set ssid MyNetwork
+set pass correct horse battery staple
+set broker mqtt.example.lan
+save
+reboot
 ```
 
-Three things worth knowing:
-
-- **Stored settings beat build-time defaults.** Put defaults in `firmware/credentials.conf` (gitignored,
-  merged automatically, see `credentials.conf.example`); anything set over the console and saved wins
-  from then on, including across a reflash — the settings live in the storage partition, not the image.
-- **A typed `state` does not make the lamps trust it.** With nothing linked, the fail-visible pattern
-  still wins (ADR-0007), so on a bare bench you will not see the state you just set. That changes when
-  D104's transport selection treats console traffic as the host heartbeat.
-- **Over-long input is refused, not truncated**, so a too-long passphrase says `line too long, ignored`
-  rather than silently storing a wrong credential.
-
-Line editing is deliberately minimal — backspace works, arrow keys are inert, there is no history.
-Zephyr's shell was measured and does not link on this part (`RAM overflowed by 464 bytes`), and
-`lineedit.c` is isolated behind a "bytes in, lines out" interface so a richer CLI can replace that one
-file if it ever earns the RAM.
+Setting an SSID while `transport` is `usb` prints a note saying the network will not be used, and the
+boot banner repeats it — the one easy mistake this design makes, called out where it happens.
 
 ## Moving the Zephyr pin
 

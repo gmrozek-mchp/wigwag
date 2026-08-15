@@ -7,6 +7,7 @@
 #include "settings_store.h"
 
 #include <zephyr/device.h>
+#include <zephyr/sys/util.h>
 #include <zephyr/drivers/flash.h>
 #include <zephyr/kvss/nvs.h>
 #include <zephyr/storage/flash_map.h>
@@ -34,6 +35,7 @@ enum {
 	SET_ID_SEC,
 	SET_ID_BRIGHTNESS,
 	SET_ID_GAIN,	/* all three lamps as one record; they are calibrated together */
+	SET_ID_TRANSPORT,
 };
 
 static struct nvs_fs fs;
@@ -58,6 +60,8 @@ void settings_defaults(struct wigwag_settings *s)
 
 	s->port = CONFIG_WIGWAG_PORT;
 	s->sec = CONFIG_WIGWAG_SEC;
+	s->transport = IS_ENABLED(CONFIG_WIGWAG_TRANSPORT_USB) ? WIGWAG_TRANSPORT_USB
+							       : WIGWAG_TRANSPORT_WIFI;
 
 	/*
 	 * Full brightness and no per-lamp correction, matching what lamp_pwm.c starts with. A device
@@ -145,6 +149,7 @@ int settings_load(struct wigwag_settings *s)
 	(void)nvs_read(&fs, SET_ID_SEC, &s->sec, sizeof(s->sec));
 	(void)nvs_read(&fs, SET_ID_BRIGHTNESS, &s->brightness, sizeof(s->brightness));
 	(void)nvs_read(&fs, SET_ID_GAIN, s->gain, sizeof(s->gain));
+	(void)nvs_read(&fs, SET_ID_TRANSPORT, &s->transport, sizeof(s->transport));
 
 	return 0;
 }
@@ -208,6 +213,11 @@ int settings_save(const struct wigwag_settings *s)
 
 		ret = (n < 0) ? (int)n : 0;
 	}
+	if (ret == 0) {
+		ssize_t n = nvs_write(&fs, SET_ID_TRANSPORT, &s->transport, sizeof(s->transport));
+
+		ret = (n < 0) ? (int)n : 0;
+	}
 
 	return ret;
 }
@@ -228,7 +238,7 @@ int settings_clear(struct wigwag_settings *s)
 	 * tombstone, which keeps the store consistent if power is lost partway through — erasing the
 	 * sectors directly would leave NVS reading a partition it no longer recognises.
 	 */
-	for (id = SET_ID_SSID; id <= SET_ID_GAIN; id++) {
+	for (id = SET_ID_SSID; id <= SET_ID_TRANSPORT; id++) {
 		int e = nvs_delete(&fs, id);
 
 		if (e != 0 && ret == 0) {

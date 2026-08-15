@@ -1,7 +1,10 @@
 # ADR-0021 — The USB claim latches until reset, and `USBCFG` is not used
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR-0022
 - **Date:** 2026-08-15
+- **Superseded by ADR-0022**, which replaces inference-plus-latch with a stored setting. The
+  reasoning below is kept because the path — infer, then latch, then configure — is the useful part
+  of the record.
 - **Supersedes:** ADR-0018's transport-*selection* mechanics and its `USBCFG`/`SSPND` pin decision.
   ADR-0018's decision to fit the `MCP2221A` and carry the console over it stands unchanged.
 

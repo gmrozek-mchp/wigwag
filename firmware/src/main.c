@@ -225,21 +225,6 @@ static void at_service(bool at_ready)
 		static bool announced_online;
 		uint32_t now;
 
-		/*
-		 * Stop servicing the module once USB has latched (D118). While latched the Wi-Fi path can
-		 * never be selected again this boot, so every reset, timeout and backoff it performs is
-		 * waste — an end-to-end session accumulated 947 timeouts proving exactly that.
-		 *
-		 * Deliberately stops *both* halves. Draining the UART without ticking would keep delivering
-		 * MQTT states to the lamps, which is precisely the substitution the latch exists to prevent:
-		 * the display must follow the transport that owns it. The module may well stay associated
-		 * and connected; nothing reads it any more, and that is the point.
-		 */
-		if (at_ready && transport_usb_holds(&tport)) {
-			printk("wigwag: usb has the device, module service stopped\n");
-			at_ready = false;
-		}
-
 		if (at_ready) {
 			now = (uint32_t)k_uptime_get();
 			rnwf_uart_poll(&at_client);
@@ -413,11 +398,18 @@ int main(void)
 	}
 
 	/*
-	 * `wifi_configured` is simply "is there an SSID to try". An empty one is the wired variant's
-	 * normal state (ADR-0018), and it is what stops the device below from spending its life trying
-	 * to associate with a network called "".
+	 * Which transport owns the lamps is a setting, not a discovery (ADR-0022). `wifi_configured` is
+	 * only "is there an SSID to try", which decides whether the wireless path can work at all.
 	 */
-	transport_init(&tport, settings.ssid[0] != '\0');
+	transport_init(&tport, (enum wigwag_transport)settings.transport,
+		       settings.ssid[0] != '\0');
+	printk("wigwag: transport %s (configured)\n",
+	       transport_kind_str(transport_active(&tport)));
+
+	/* Same warning as the console gives, for a device that was configured and then rebooted. */
+	if (settings.transport == WIGWAG_TRANSPORT_USB && settings.ssid[0] != '\0') {
+		printk("wigwag: note: ssid \"%s\" configured but transport is usb\n", settings.ssid);
+	}
 
 	(void)console_init(&settings, &tport);
 
@@ -430,12 +422,15 @@ int main(void)
 	}
 
 	/*
-	 * No SSID, no Wi-Fi. Previously this started the AT client regardless and it would reset,
-	 * time out and back off forever against an empty network name — noisy, and pointless on a unit
-	 * that is driven over the wire. The console can set an SSID and reboot into the other mode.
+	 * The module is brought up only when Wi-Fi is the configured transport *and* there is a network
+	 * to join. A wired device never starts it: there is nothing for it to do, and letting it reset,
+	 * time out and back off forever is waste measured at 947 AT timeouts in one session (D118).
 	 */
-	if (settings.ssid[0] == '\0') {
-		printk("wigwag: no ssid configured, waiting for a host on the console\n");
+	if (!transport_wants_module(&tport)) {
+		printk("wigwag: wired transport, module not started\n");
+		at_ready = false;
+	} else if (settings.ssid[0] == '\0') {
+		printk("wigwag: no ssid configured; set one, or `set transport usb`\n");
 		at_ready = false;
 	} else {
 		at_ready = (rnwf_uart_init(&at_client, &module_cfg, &cb) == 0);

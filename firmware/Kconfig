@@ -12,6 +12,20 @@
 
 menu "wigwag"
 
+config WIGWAG_TRANSPORT_USB
+	bool "Default to the wired (USB serial) transport"
+	default y
+	help
+	  Which side owns the lamps on a device that has never been configured (ADR-0022, D120).
+
+	  Defaults to the wire because that is the transport which needs no configuration: plug a fresh
+	  device into a computer, start the daemon, and it works. Wi-Fi cannot work until an SSID and
+	  passphrase have been set, so anyone using it is already configuring the device and can set
+	  `transport wifi` in the same sitting.
+
+	  Set this to n for a build that should come up wireless out of the box. Either way
+	  `set transport usb|wifi` overrides it at runtime.
+
 config WIGWAG_SSID
 	string "Default Wi-Fi SSID"
 	default ""

@@ -76,31 +76,34 @@ as the daemon's Last Will) is the host's own liveness marker.
 
 ### Daemon → device, over the wire (USB serial)
 
-The same four states, a different carrier. One transport is active at a time and the device chooses
-it from evidence, not configuration (ADR-0018, D104). Lines on the console UART, `\r\n` terminated,
-the same stream the device prints diagnostics on — device→host is human-readable output, host→device
-is commands, so the two directions never need framing.
+The same four states, a different carrier. One transport is active at a time, and **the device decides
+which by a stored setting** — `set transport usb|wifi` — not by anything either side detects
+(ADR-0022, D119). Lines on the console UART, `\r\n` terminated, the same stream the device prints
+diagnostics on: device→host is human-readable output, host→device is commands, so the two directions
+never need framing.
 
 | Line | Meaning |
 |---|---|
 | `state IDLE\|BUSY\|WAIT\|ERROR` | what to display. Bare word, not JSON |
 | `host on` | **the daemon is alive. Must be repeated within 10 s** |
-| `host off` | orderly goodbye; the device stops trusting us at once, but stays on the wire |
+| `host off` | orderly goodbye; the device stops trusting us at once |
 | `brightness 0`–`255` | as the retained topic |
 | `echo off` | stop echoing input, which a program does not want |
 
 **Why `host on` has to repeat, when `wigwag/host_online` does not.** Over MQTT the daemon publishes
 that topic once, retained, and registers `0` as its Last Will: the broker holds the value for a late
 subscriber and announces the death on the daemon's behalf. A serial line has neither — nothing
-retains, and nothing notices a daemon that stops. `USBCFG` does not close the gap either, because a
-computer whose daemon has crashed still enumerates. So the wired path is the one place the device
-demands *periodic* evidence, on the same 10 s budget D34 sets for the broker.
+retains, and nothing notices a daemon that stops. (The bridge's `USBCFG` pin would not have closed the
+gap either, and is not fitted — D116: a computer whose daemon has crashed still enumerates perfectly
+happily.) So the wired path is the one place the device demands *periodic* evidence, on the same 10 s
+budget D34 sets for the broker.
 
-**The wire wins, and keeps winning.** Once a host has spoken, the device belongs to USB until it is
-reset — it will not fall back to Wi-Fi even after hours of silence (D117, ADR-0021). That is because the
-two transports do not carry the same information: a daemon reports *its own machine's* sessions, so
-falling back would answer a different question rather than recover. A quiet host therefore means amber,
-not another machine's state. Unplugging the cable is a reset, because the cable is also the power.
+**Which transport owns the lamps is a device setting**, not something either side negotiates
+(`set transport usb|wifi`, ADR-0022). A wired device ignores Wi-Fi entirely and a wireless one ignores
+this protocol entirely — the console still works for configuration and diagnostics either way. That is
+deliberate: the two carriers do not report the same thing, since a daemon aggregates *its own machine's*
+sessions, so substituting one for the other would answer a different question rather than recover. A
+configured transport that is not working shows the fail-visible pattern instead.
 
 The daemon sends this from its existing 2 s loop, so five beats fit inside the device's window
 (`SerialPublisher`, ADR-0020). Set `WIGWAG_SERIAL_PORT` — or `serial.port` in the config file — and the

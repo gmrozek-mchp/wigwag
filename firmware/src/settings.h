@@ -36,6 +36,21 @@
 #define SET_USER_SZ	33
 #define SET_MQTTPASS_SZ	65
 
+/**
+ * Which transport owns the device.
+ *
+ * **Configured, not inferred.** An earlier design chose this from evidence — whichever side was
+ * talking took the device — and that was wrong twice over: a cable plugged in for power or for
+ * configuration silently repurposed the lamps, and the two transports do not even report the same
+ * machine's work, so the substitution was not recoverable by waiting. ADR-0013 had already settled
+ * this shape for the broker address ("configured, not auto-discovered") and this should have followed
+ * it. See ADR-0022.
+ */
+enum wigwag_transport {
+	WIGWAG_TRANSPORT_WIFI = 0,	/* RNWF02 and MQTT (ADR-0002, ADR-0003) */
+	WIGWAG_TRANSPORT_USB,		/* console serial, via the bridge on the product (D102) */
+};
+
 struct wigwag_settings {
 	char ssid[SET_SSID_SZ];
 	char pass[SET_PASS_SZ];
@@ -46,6 +61,9 @@ struct wigwag_settings {
 
 	uint16_t port;
 	uint8_t sec;
+
+	/** enum wigwag_transport. The one setting that decides what this device is. */
+	uint8_t transport;
 
 	/** Startup brightness, so a wired unit with no broker still respects a dimmed desk. */
 	uint8_t brightness;

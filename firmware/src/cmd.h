@@ -80,6 +80,14 @@ enum cmd_key {
 	CMD_KEY_CLIENT,
 	CMD_KEY_USER,
 	CMD_KEY_MQTTPASS,	/* broker password — also never echoed */
+
+	/**
+	 * `set transport usb|wifi` — which side owns the lamps (ADR-0022).
+	 *
+	 * A word rather than a number, because `set transport 1` is the kind of configuration nobody
+	 * can read back six months later.
+	 */
+	CMD_KEY_TRANSPORT,
 };
 
 struct cmd {
@@ -125,8 +133,14 @@ bool cmd_parse(char *line, struct cmd *out);
  * `set`, `show`, `save`, `clear`, `gain`, `brightness`, `echo`, `help` and `reboot` are all things a
  * human does at a terminal. A daemon that wants the device sends `host on` every couple of seconds and
  * `state` when the state changes, so nothing real is lost by ignoring the rest.
+ *
+ * **`host off` is excluded too**, which is why this takes the whole command rather than just the kind.
+ * It is the same verb as `host on` but means the opposite, and treating it as a claim was a real bug:
+ * a bare `host off` on a device that had never seen a host would latch it to USB (D117) *and*
+ * immediately distrust it, leaving the lamps amber and Wi-Fi ignored until a reset. A message saying
+ * "there is no host" must not be able to claim the device.
  */
-bool cmd_is_host_activity(enum cmd_kind kind);
+bool cmd_is_host_activity(const struct cmd *c);
 
 /** True for keys whose value must never be printed back. See `show`. */
 bool cmd_key_is_secret(enum cmd_key key);

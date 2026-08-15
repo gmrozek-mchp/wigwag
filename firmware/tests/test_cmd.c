@@ -190,26 +190,38 @@ static void test_host_verb(void)
 	CHECK(!run("hostile", &c) && c.kind == CMD_UNKNOWN, "a longer verb is not host");
 }
 
-static void test_only_host_and_state_are_host_activity(void)
+static void test_only_host_on_and_state_are_host_activity(void)
 {
+	struct cmd c;
+
 	/*
 	 * The distinction that stops a person configuring Wi-Fi from being mistaken for a daemon
 	 * driving the display — and from getting a spurious amber flicker ten seconds later.
 	 */
-	CHECK(cmd_is_host_activity(CMD_HOST), "host on is a host talking");
-	CHECK(cmd_is_host_activity(CMD_STATE), "state is a host driving the display");
+	CHECK(run("host on", &c) && cmd_is_host_activity(&c), "host on is a host talking");
+	CHECK(run("state BUSY", &c) && cmd_is_host_activity(&c), "state is a host driving the display");
 
-	CHECK(!cmd_is_host_activity(CMD_SET), "set is configuration, not a host");
-	CHECK(!cmd_is_host_activity(CMD_SHOW), "show is a person looking");
-	CHECK(!cmd_is_host_activity(CMD_SAVE), "save is configuration");
-	CHECK(!cmd_is_host_activity(CMD_CLEAR), "clear is configuration");
-	CHECK(!cmd_is_host_activity(CMD_GAIN), "gain is calibration by eye");
-	CHECK(!cmd_is_host_activity(CMD_BRIGHTNESS), "brightness is ambiguous, so it does not claim");
-	CHECK(!cmd_is_host_activity(CMD_ECHO), "echo is plumbing");
-	CHECK(!cmd_is_host_activity(CMD_HELP), "help is a person");
-	CHECK(!cmd_is_host_activity(CMD_REBOOT), "reboot is a person");
-	CHECK(!cmd_is_host_activity(CMD_NONE), "a blank line is nothing");
-	CHECK(!cmd_is_host_activity(CMD_UNKNOWN), "noise is not a host");
+	/*
+	 * `host off` must NOT claim. It is the same verb meaning the opposite, and letting it claim was
+	 * a real bug: a bare `host off` on a device that had never seen a host latched it to USB and
+	 * then distrusted it, so the lamps sat amber with Wi-Fi ignored until a reset.
+	 */
+	CHECK(run("host off", &c) && !cmd_is_host_activity(&c),
+	      "host off says there is no host, so it cannot claim the device");
+
+	CHECK(run("set ssid x", &c) && !cmd_is_host_activity(&c), "set is configuration, not a host");
+	CHECK(run("show", &c) && !cmd_is_host_activity(&c), "show is a person looking");
+	CHECK(run("save", &c) && !cmd_is_host_activity(&c), "save is configuration");
+	CHECK(run("clear", &c) && !cmd_is_host_activity(&c), "clear is configuration");
+	CHECK(run("gain green 10", &c) && !cmd_is_host_activity(&c), "gain is calibration by eye");
+	CHECK(run("brightness 10", &c) && !cmd_is_host_activity(&c),
+	      "brightness is ambiguous, so it does not claim");
+	CHECK(run("echo off", &c) && !cmd_is_host_activity(&c), "echo is plumbing");
+	CHECK(run("help", &c) && !cmd_is_host_activity(&c), "help is a person");
+	CHECK(run("reboot", &c) && !cmd_is_host_activity(&c), "reboot is a person");
+	CHECK(run("", &c) && !cmd_is_host_activity(&c), "a blank line is nothing");
+	CHECK(!run("frobnicate", &c) && !cmd_is_host_activity(&c), "noise is not a host");
+	CHECK(!cmd_is_host_activity(NULL), "NULL is not a host");
 }
 
 static void test_secrets_are_marked(void)
@@ -280,7 +292,7 @@ int main(void)
 	test_brightness_and_gain();
 	test_echo_verb();
 	test_host_verb();
-	test_only_host_and_state_are_host_activity();
+	test_only_host_on_and_state_are_host_activity();
 	test_secrets_are_marked();
 	test_key_names_round_trip();
 	test_long_lines_do_not_overrun();

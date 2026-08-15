@@ -91,7 +91,8 @@ static void print_help(void)
 {
 	printk("commands:\n"
 	       "  show                     settings, secrets masked\n"
-	       "  set <key> <value>        ssid pass sec broker port client user mqttpass\n"
+	       "  set <key> <value>        transport ssid pass sec broker port client user mqttpass\n"
+	       "  set transport usb|wifi   which side owns the lamps; reboot to apply\n"
 	       "  save                     persist; Wi-Fi changes apply on reboot\n"
 	       "  clear                    forget stored settings\n"
 	       "  reboot\n"
@@ -125,6 +126,8 @@ static void print_one(enum cmd_key key)
 static void print_show(void)
 {
 	printk("settings:\n");
+	/* First, because it decides what this device is (ADR-0022). Everything else is detail. */
+	print_one(CMD_KEY_TRANSPORT);
 	print_one(CMD_KEY_SSID);
 	print_one(CMD_KEY_PASS);
 	printk("  %-9s %u\n", cmd_key_str(CMD_KEY_SEC), cfg->sec);
@@ -190,6 +193,17 @@ static void exec(struct cmd *c, bool ok)
 		}
 		/* Staged, not stored — `save` is a separate act so a half-typed network is recoverable. */
 		printk("set %s (not saved)\n", cmd_key_str(c->key));
+
+		/*
+		 * The one configuration mistake this design makes easy: setting up a network on a device
+		 * whose transport is still the wire (the default, D120), then wondering why the lamps
+		 * ignore it. Said here, at the moment it happens, rather than left for the user to deduce
+		 * from `show`.
+		 */
+		if (c->key == CMD_KEY_SSID && cfg->transport == WIGWAG_TRANSPORT_USB) {
+			printk("note: transport is usb, so this network will not be used;\n"
+			       "      `set transport wifi` and save to switch\n");
+		}
 		break;
 
 	case CMD_SAVE: {
@@ -318,7 +332,7 @@ void console_poll(void)
 			 * device that was working fine. A rejected line never counts either: noise on a
 			 * wire is not a host.
 			 */
-			if (ok && cmd_is_host_activity(parsed.kind) && tport != NULL) {
+			if (ok && cmd_is_host_activity(&parsed) && tport != NULL) {
 				transport_note_host(tport, (uint32_t)k_uptime_get());
 			}
 

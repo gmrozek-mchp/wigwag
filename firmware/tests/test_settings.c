@@ -126,6 +126,31 @@ static void test_numeric_ranges(void)
 	CHECK(!settings_apply(&s, CMD_KEY_SEC, NULL, 255), "sec 255 refused");
 }
 
+static void test_transport_takes_only_two_words(void)
+{
+	blank();
+
+	CHECK(settings_apply(&s, CMD_KEY_TRANSPORT, "usb", 0) &&
+	      s.transport == WIGWAG_TRANSPORT_USB, "usb");
+	CHECK(settings_apply(&s, CMD_KEY_TRANSPORT, "wifi", 0) &&
+	      s.transport == WIGWAG_TRANSPORT_WIFI, "wifi");
+
+	/*
+	 * Anything else is refused rather than defaulted. A typo that silently left the device on the
+	 * wrong transport would look like a dead light with no clue why.
+	 */
+	CHECK(!settings_apply(&s, CMD_KEY_TRANSPORT, "USB", 0), "case matters");
+	CHECK(!settings_apply(&s, CMD_KEY_TRANSPORT, "serial", 0), "no synonyms");
+	CHECK(!settings_apply(&s, CMD_KEY_TRANSPORT, "", 0), "empty refused");
+	CHECK(!settings_apply(&s, CMD_KEY_TRANSPORT, NULL, 0), "NULL refused");
+	CHECK(s.transport == WIGWAG_TRANSPORT_WIFI, "a refusal leaves the old value alone");
+
+	/* And it reads back as the same word it was set with, for `show`. */
+	CHECK(strcmp(settings_get_str(&s, CMD_KEY_TRANSPORT), "wifi") == 0, "reads back as wifi");
+	(void)settings_apply(&s, CMD_KEY_TRANSPORT, "usb", 0);
+	CHECK(strcmp(settings_get_str(&s, CMD_KEY_TRANSPORT), "usb") == 0, "reads back as usb");
+}
+
 static void test_null_and_unknown(void)
 {
 	blank();
@@ -142,6 +167,7 @@ int main(void)
 	test_empty_values_are_legal();
 	test_too_long_is_refused_not_truncated();
 	test_numeric_ranges();
+	test_transport_takes_only_two_words();
 	test_null_and_unknown();
 
 	printf("%d checks, %d failures\n", checks, failures);

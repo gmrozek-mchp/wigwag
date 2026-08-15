@@ -78,10 +78,10 @@ serial < wigwag: RESET BY WATCHDOG (rcause 10)
 
 That log is the only place a host ever sees those, so it is worth turning up when something is odd.
 
-**One thing to know:** once the daemon has spoken over the wire, the device stays on the wire until it
-is reset — it will not fall back to Wi-Fi, because the daemon on the other end of a broker is a
-different machine reporting different work (D117). So if you configure Wi-Fi over the console and want
-the device to use it, stop the daemon and power-cycle the device. Unplugging it is a power cycle.
+**One thing to know:** the device decides which transport owns its lamps, and it is a stored setting
+rather than something this daemon can claim (ADR-0022). A fresh device defaults to the wire, so it works
+with no configuration; a device set to `wifi` will ignore everything sent here except configuration
+commands. `set transport usb`, `save` and `reboot` on the device's console switches it.
 
 `uv sync` is the only build step. On Windows use PowerShell or Git Bash; the commands
 are identical.

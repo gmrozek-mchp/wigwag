@@ -55,6 +55,25 @@ bool settings_apply(struct wigwag_settings *s, enum cmd_key key, const char *val
 		s->port = (uint16_t)num;
 		return true;
 
+	case CMD_KEY_TRANSPORT:
+		/*
+		 * Only the two words, exactly. Refusing anything else matters more here than for most
+		 * settings: a typo that silently left the device on the wrong transport would look like
+		 * a dead light with no clue why.
+		 */
+		if (value == NULL) {
+			return false;
+		}
+		if (strcmp(value, "usb") == 0) {
+			s->transport = WIGWAG_TRANSPORT_USB;
+			return true;
+		}
+		if (strcmp(value, "wifi") == 0) {
+			s->transport = WIGWAG_TRANSPORT_WIFI;
+			return true;
+		}
+		return false;
+
 	case CMD_KEY_SEC:
 		/* enum rnwf_sec_type runs 0..6; anything else would be sent to the module verbatim. */
 		if (num > 6U) {
@@ -84,6 +103,8 @@ const char *settings_get_str(const struct wigwag_settings *s, enum cmd_key key)
 		return s->user;
 	case CMD_KEY_MQTTPASS:
 		return s->mqttpass;
+	case CMD_KEY_TRANSPORT:
+		return (s->transport == WIGWAG_TRANSPORT_USB) ? "usb" : "wifi";
 	default:
 		/* Numeric keys and unknown ones: the caller formats those itself. */
 		return NULL;

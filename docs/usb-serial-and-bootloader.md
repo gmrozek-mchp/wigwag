@@ -6,9 +6,10 @@ PL10 Curiosity Nano, on that date.
 
 The two ideas have very different verdicts, so they are kept separate here.
 
-- **USB-serial via MCP2221A** — **decided and committed the same day: fitted, populated, console over
-  it, one transport at a time chosen from `USBCFG`.** See **ADR-0018**, D101–D104. The material below
-  is the supporting analysis.
+- **USB-serial via MCP2221A** — **decided: fitted and populated, with the console over it** (ADR-0018).
+  How the transport is *chosen* took two further attempts and ended at a stored setting (**ADR-0022**);
+  the `USBCFG`/`SSPND` pins were withdrawn (D116). The material below is the supporting analysis, with
+  the superseded parts marked.
 - **UF2 bootloader** — impossible on this silicon. The *serial* half of the same Adafruit bootloader
   is viable; direction agreed (developer convenience, bare metal) but not scheduled.
 
@@ -57,28 +58,26 @@ microchipDIRECT on 2026-08-14:
 - **A console on the product PCB, which today does not exist.** On a real board the only way to see
   `RESET BY WATCHDOG` (ADR-0016) is SWD. Rule 4 asks the device not to lie; this is the first cheap
   way to let it *explain itself*.
-- **Hardware evidence of a live host.** `GP2` can be `USBCFG` — "indicates when the enumeration is
-  completed" — and `GP0` can be `SSPND`, asserted when the host suspends. Two more independent inputs
-  for `link.c`, better grounded than anything in the MQTT path. Enumeration is not the same as "the
-  daemon is running", so it supplements rather than replaces a heartbeat.
+- ~~**Hardware evidence of a live host** via `USBCFG`/`SSPND`.~~ **Withdrawn (D116.)** Examined
+  properly, `USBCFG` cannot see an unplugged cable — the device is USB-powered, so that is a power-off —
+  and cannot see a sleeping host, since suspend does not *unconfigure* a device. Only `SSPND` sees that,
+  and it is not GP0's factory default (`LED_URx` is), so it would need per-unit chip-settings
+  programming. Received bytes turned out to be necessary *and* sufficient. `GP0`/`GP1` do still default
+  to `LED_URx`/`LED_UTx`, so two activity LEDs remain free if a visible indicator is ever wanted.
 - **A wired variant could drop the RNWF02 entirely** — no Wi-Fi credentials, no broker, no MQTT. For
   a light sitting next to the machine running Claude Code, that may be the majority case.
 
-### Decided (2026-08-14) — ADR-0018
+### Decided — ADR-0018, then ADR-0022
 
-1. **Scope: fitted and populated on the first build.** Footprint, `SERCOM1` pins and the
-   `USBCFG`/`SSPND` inputs all go into the Phase 3 layout (D102, D103). Cheap now partly because the
-   28-pin pin map has to be reworked regardless — see the pin note below.
-2. **Role: one transport at a time**, selected at boot from `USBCFG` plus a host heartbeat (D104).
-   Both live simultaneously was rejected: two concurrent trust evaluations plus a fail-visible rule
-   spanning both is the complexity shape that produced D75.
+1. **Scope: fitted and populated on the first build.** Footprint and `SERCOM1` pins go into the Phase 3
+   layout (D102). Cheap partly because the 28-pin pin map has to be reworked regardless — see below.
+   The `USBCFG`/`SSPND` inputs originally budgeted here were withdrawn (D116).
+2. **Role: one transport at a time, chosen by a stored setting** (`set transport usb|wifi`, D119),
+   defaulting to the wire because that is the transport needing no configuration (D120). Two earlier
+   answers — infer from evidence (D104), then infer and latch (D117) — are superseded: both let a cable
+   plugged in for power or configuration silently repurpose the device.
 
-The console comes free — it is a devicetree and pinmux assignment, so existing `printk` output reaches
-a CDC port with no firmware written. That is the part to build first.
-
-**Still open, neither blocking the PCB:** the wire protocol for the USB path, and whether the daemon's
-serial backend justifies a `pyserial` dependency on Windows (`termios` is stdlib on macOS and Linux,
-and ADR-0010 makes the host cross-platform, so this needs its own ADR).
+The console comes free either way, being a devicetree and pinmux assignment.
 
 ### The 28-pin pin trap
 

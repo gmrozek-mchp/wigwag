@@ -2,9 +2,9 @@
 
 - **Status:** Accepted, in part superseded
 - **Date:** 2026-08-14
-- **Superseded by ADR-0021**, for the transport-*selection* mechanics (the soft hold and release
-  window) and for the `USBCFG`/`SSPND` pin decision. Fitting the `MCP2221A` and carrying the console
-  over it stand unchanged.
+- **Superseded for transport selection by ADR-0021, then ADR-0022** — the final answer is a stored
+  setting, not inference. The `USBCFG`/`SSPND` pin decision here is also withdrawn (D116). Fitting the
+  `MCP2221A` and carrying the console over it stand unchanged.
 
 ## Context
 

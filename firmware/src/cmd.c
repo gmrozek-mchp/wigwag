@@ -31,6 +31,7 @@ static const struct key_name keys[] = {
 	{ "client",   CMD_KEY_CLIENT,   false, false },
 	{ "user",     CMD_KEY_USER,     false, false },
 	{ "mqttpass", CMD_KEY_MQTTPASS, false, true  },
+	{ "transport", CMD_KEY_TRANSPORT, false, false },
 };
 
 static const struct key_name *key_lookup(const char *name)
@@ -46,9 +47,18 @@ static const struct key_name *key_lookup(const char *name)
 	return NULL;
 }
 
-bool cmd_is_host_activity(enum cmd_kind kind)
+bool cmd_is_host_activity(const struct cmd *c)
 {
-	return kind == CMD_HOST || kind == CMD_STATE;
+	if (c == NULL) {
+		return false;
+	}
+
+	/* `host on` claims; `host off` is its opposite and must not. */
+	if (c->kind == CMD_HOST) {
+		return c->num != 0U;
+	}
+
+	return c->kind == CMD_STATE;
 }
 
 bool cmd_key_is_secret(enum cmd_key key)

@@ -42,8 +42,8 @@ $(BIN): $(SRCS) $(DEPS) | $(BUILD)
 
 transport: $(TRANS)
 	./$(TRANS)
-$(TRANS): test_transport.c ../src/transport.c ../src/transport.h | $(BUILD)
-	$(CC) $(CFLAGS) -o $@ test_transport.c ../src/transport.c $(LDFLAGS)
+$(TRANS): test_transport.c ../src/transport.c ../src/transport.h ../src/cmd.c ../src/lamp.c | $(BUILD)
+	$(CC) $(CFLAGS) -o $@ test_transport.c ../src/transport.c ../src/cmd.c ../src/lamp.c $(LDFLAGS)
 
 settings: $(SET)
 	./$(SET)
