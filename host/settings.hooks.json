@@ -1,6 +1,5 @@
 {
-  "//": "wigwag hook wiring. Merge the SessionStart/UserPromptSubmit/... entries below into your .claude/settings.json 'hooks' object. Exec form is used throughout so ${CLAUDE_PROJECT_DIR} needs no quoting and works on every platform. On Windows without Git Bash, swap the command for: powershell.exe -NoProfile -ExecutionPolicy Bypass -File ${CLAUDE_PROJECT_DIR}/host/hooks/wg-notify.ps1",
-
+  "//": "wigwag hook wiring. Merge the entries below into your .claude/settings.json 'hooks' object. Exec form throughout so ${CLAUDE_PROJECT_DIR} needs no quoting and works on every platform. On Windows without Git Bash, swap the command for: powershell.exe -NoProfile -ExecutionPolicy Bypass -File ${CLAUDE_PROJECT_DIR}/host/hooks/wg-notify.ps1. TWO THINGS LEARNED THE HARD WAY (D123, journal 2026-08-15). (1) One matcher per Notification type: a combined 'permission_prompt|idle_prompt|agent_needs_input' matcher never fires, because matchers filter on the notification type and no type contains a pipe -- which made WAIT unreachable from Phase 1 until it was caught by driving a real session. (2) There is NO event for a user rejecting or interrupting a tool call, and PermissionDenied is not it -- that fires only when auto mode denies a call. So a WAIT entered by PermissionRequest has no exit edge and clears only when the user next types (UserPromptSubmit) or the daemon's session TTL expires. Elicitation is the MCP equivalent and does have an exit edge (ElicitationResult).",
   "hooks": {
     "SessionStart": [
       {
@@ -9,26 +8,32 @@
           {
             "type": "command",
             "command": "${CLAUDE_PROJECT_DIR}/host/hooks/wg-notify",
-            "args": ["SET", "IDLE", "SessionStart"],
+            "args": [
+              "SET",
+              "IDLE",
+              "SessionStart"
+            ],
             "timeout": 5
           }
         ]
       }
     ],
-
     "UserPromptSubmit": [
       {
         "hooks": [
           {
             "type": "command",
             "command": "${CLAUDE_PROJECT_DIR}/host/hooks/wg-notify",
-            "args": ["SET", "BUSY", "UserPromptSubmit"],
+            "args": [
+              "SET",
+              "BUSY",
+              "UserPromptSubmit"
+            ],
             "timeout": 5
           }
         ]
       }
     ],
-
     "PreToolUse": [
       {
         "matcher": "*",
@@ -36,13 +41,16 @@
           {
             "type": "command",
             "command": "${CLAUDE_PROJECT_DIR}/host/hooks/wg-notify",
-            "args": ["SET", "BUSY", "PreToolUse"],
+            "args": [
+              "SET",
+              "BUSY",
+              "PreToolUse"
+            ],
             "timeout": 5
           }
         ]
       }
     ],
-
     "PostToolUse": [
       {
         "matcher": "*",
@@ -50,40 +58,129 @@
           {
             "type": "command",
             "command": "${CLAUDE_PROJECT_DIR}/host/hooks/wg-notify",
-            "args": ["SET", "BUSY", "PostToolUse"],
+            "args": [
+              "SET",
+              "BUSY",
+              "PostToolUse"
+            ],
             "timeout": 5
           }
         ]
       }
     ],
-
-    "Notification": [
+    "PermissionRequest": [
       {
-        "matcher": "permission_prompt|idle_prompt|agent_needs_input",
         "hooks": [
           {
             "type": "command",
             "command": "${CLAUDE_PROJECT_DIR}/host/hooks/wg-notify",
-            "args": ["SET", "WAIT", "Notification"],
+            "args": [
+              "SET",
+              "WAIT",
+              "PermissionRequest"
+            ],
             "timeout": 5
           }
         ]
       }
     ],
-
+    "Elicitation": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/host/hooks/wg-notify",
+            "args": [
+              "SET",
+              "WAIT",
+              "Elicitation"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "ElicitationResult": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/host/hooks/wg-notify",
+            "args": [
+              "SET",
+              "BUSY",
+              "ElicitationResult"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "permission_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/host/hooks/wg-notify",
+            "args": [
+              "SET",
+              "WAIT",
+              "Notification/permission_prompt"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "idle_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/host/hooks/wg-notify",
+            "args": [
+              "SET",
+              "WAIT",
+              "Notification/idle_prompt"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "agent_needs_input",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/host/hooks/wg-notify",
+            "args": [
+              "SET",
+              "WAIT",
+              "Notification/agent_needs_input"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [
           {
             "type": "command",
             "command": "${CLAUDE_PROJECT_DIR}/host/hooks/wg-notify",
-            "args": ["SET", "IDLE", "Stop"],
+            "args": [
+              "SET",
+              "IDLE",
+              "Stop"
+            ],
             "timeout": 5
           }
         ]
       }
     ],
-
     "StopFailure": [
       {
         "matcher": "*",
@@ -91,13 +188,16 @@
           {
             "type": "command",
             "command": "${CLAUDE_PROJECT_DIR}/host/hooks/wg-notify",
-            "args": ["SET", "ERROR", "StopFailure"],
+            "args": [
+              "SET",
+              "ERROR",
+              "StopFailure"
+            ],
             "timeout": 5
           }
         ]
       }
     ],
-
     "SessionEnd": [
       {
         "matcher": "*",
@@ -105,7 +205,9 @@
           {
             "type": "command",
             "command": "${CLAUDE_PROJECT_DIR}/host/hooks/wg-notify",
-            "args": ["DROP"],
+            "args": [
+              "DROP"
+            ],
             "timeout": 5
           }
         ]

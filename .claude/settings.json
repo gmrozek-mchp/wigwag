@@ -7,26 +7,32 @@
           {
             "type": "command",
             "command": "${CLAUDE_PROJECT_DIR}/host/hooks/wg-notify",
-            "args": ["SET", "IDLE", "SessionStart"],
+            "args": [
+              "SET",
+              "IDLE",
+              "SessionStart"
+            ],
             "timeout": 5
           }
         ]
       }
     ],
-
     "UserPromptSubmit": [
       {
         "hooks": [
           {
             "type": "command",
             "command": "${CLAUDE_PROJECT_DIR}/host/hooks/wg-notify",
-            "args": ["SET", "BUSY", "UserPromptSubmit"],
+            "args": [
+              "SET",
+              "BUSY",
+              "UserPromptSubmit"
+            ],
             "timeout": 5
           }
         ]
       }
     ],
-
     "PreToolUse": [
       {
         "matcher": "*",
@@ -34,13 +40,16 @@
           {
             "type": "command",
             "command": "${CLAUDE_PROJECT_DIR}/host/hooks/wg-notify",
-            "args": ["SET", "BUSY", "PreToolUse"],
+            "args": [
+              "SET",
+              "BUSY",
+              "PreToolUse"
+            ],
             "timeout": 5
           }
         ]
       }
     ],
-
     "PostToolUse": [
       {
         "matcher": "*",
@@ -48,40 +57,129 @@
           {
             "type": "command",
             "command": "${CLAUDE_PROJECT_DIR}/host/hooks/wg-notify",
-            "args": ["SET", "BUSY", "PostToolUse"],
+            "args": [
+              "SET",
+              "BUSY",
+              "PostToolUse"
+            ],
             "timeout": 5
           }
         ]
       }
     ],
-
-    "Notification": [
+    "PermissionRequest": [
       {
-        "matcher": "permission_prompt|idle_prompt|agent_needs_input",
         "hooks": [
           {
             "type": "command",
             "command": "${CLAUDE_PROJECT_DIR}/host/hooks/wg-notify",
-            "args": ["SET", "WAIT", "Notification"],
+            "args": [
+              "SET",
+              "WAIT",
+              "PermissionRequest"
+            ],
             "timeout": 5
           }
         ]
       }
     ],
-
+    "Elicitation": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/host/hooks/wg-notify",
+            "args": [
+              "SET",
+              "WAIT",
+              "Elicitation"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "ElicitationResult": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/host/hooks/wg-notify",
+            "args": [
+              "SET",
+              "BUSY",
+              "ElicitationResult"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "permission_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/host/hooks/wg-notify",
+            "args": [
+              "SET",
+              "WAIT",
+              "Notification/permission_prompt"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "idle_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/host/hooks/wg-notify",
+            "args": [
+              "SET",
+              "WAIT",
+              "Notification/idle_prompt"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "agent_needs_input",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/host/hooks/wg-notify",
+            "args": [
+              "SET",
+              "WAIT",
+              "Notification/agent_needs_input"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [
           {
             "type": "command",
             "command": "${CLAUDE_PROJECT_DIR}/host/hooks/wg-notify",
-            "args": ["SET", "IDLE", "Stop"],
+            "args": [
+              "SET",
+              "IDLE",
+              "Stop"
+            ],
             "timeout": 5
           }
         ]
       }
     ],
-
     "StopFailure": [
       {
         "matcher": "*",
@@ -89,13 +187,16 @@
           {
             "type": "command",
             "command": "${CLAUDE_PROJECT_DIR}/host/hooks/wg-notify",
-            "args": ["SET", "ERROR", "StopFailure"],
+            "args": [
+              "SET",
+              "ERROR",
+              "StopFailure"
+            ],
             "timeout": 5
           }
         ]
       }
     ],
-
     "SessionEnd": [
       {
         "hooks": [
@@ -112,7 +213,9 @@
           {
             "type": "command",
             "command": "${CLAUDE_PROJECT_DIR}/host/hooks/wg-notify",
-            "args": ["DROP"],
+            "args": [
+              "DROP"
+            ],
             "timeout": 5
           }
         ]

@@ -7,6 +7,101 @@ Entries record what was done, why, and — importantly — what was tried and re
 
 ---
 
+## 2026-08-15 — WAIT had never once fired, and the reason it can get stuck
+
+**Done** — hook wiring fixed in `.claude/settings.json` and `host/settings.hooks.json`. D123, D129,
+D130; Q5 opened. No firmware change: the firmware and daemon were faithful throughout.
+
+### The bug
+
+`WAIT` — the only state that asks for your attention — **has never fired since Phase 1**. The
+`Notification` hook used a single combined matcher:
+
+```json
+"matcher": "permission_prompt|idle_prompt|agent_needs_input"
+```
+
+`Notification` matchers filter on the notification *type*, and no type contains a pipe, so it matched
+nothing. Fixed with the documented `PermissionRequest` event plus one matcher per type.
+
+**Nothing found this but real use.** Not the 11 144 firmware checks, not the 110 host tests, not two
+days of driving the device with synthetic datagrams — because every test asserted on what happens
+*given* a `SET WAIT` datagram, and the datagram was never sent. The gap was in the wiring between
+Claude Code and the hook, which nothing on either side tests. Second time this session real use found
+something tests could not; the first was the daemon's missing serial heartbeat.
+
+Once fixed, `LAMP_WAIT_ESCALATE_MS` ran on hardware for the first time — steady red for 30 s, then the
+0.5 Hz blink. That behaviour has existed only in unit tests since Phase 2.
+
+### Then it got stuck, and that part is not a bug
+
+Denying the permission left the lamps red indefinitely. I guessed a missing `"*"` matcher on
+`PermissionDenied`, wired it, and it was still inert — so I went to the documentation, which says
+plainly that `PermissionDenied` fires *"when **auto mode** denies a tool call"*. Programmatic denial,
+not a person clicking no. And more decisively: **there is no event at all for a user rejecting or
+interrupting a tool call.**
+
+So a `WAIT` entered by `PermissionRequest` has **no exit edge**. It clears when the user next types
+(`UserPromptSubmit`) or when the session TTL expires, and nothing else.
+
+That generalises into the useful finding:
+
+| State | Entered by | Exited by |
+|---|---|---|
+| `IDLE` | `Stop`, `SessionStart` | `UserPromptSubmit`, `PreToolUse` |
+| `BUSY` | prompt / tool events | `Stop` |
+| `ERROR` | `StopFailure` | next prompt |
+| **`WAIT`** | `PermissionRequest` | **nothing guaranteed** |
+
+**Hooks are edge-triggered with no heartbeat** — the documentation is explicit that events fire once
+per session, once per turn, or per tool call, with no fourth cadence. So any state entered by an event
+and left by none is a trap, and `WAIT` is the only one of ours with that shape.
+
+### Which explains the stuck red better than the denial did
+
+Five sessions were in the table, two of them orphans at `WAIT` (433 s and 711 s old). Deleting a
+session in the history UI emits **no `SessionEnd`**, so no `DROP` reaches the daemon. With
+max-priority aggregation (D30) one stale `WAIT` pins the lamps red regardless of what every live
+session is doing — and max-priority is *correct* for concurrent live sessions, so the aggregation rule
+is not the fault either.
+
+The uncomfortable part: **a legitimately-waiting session and an orphan emit identical data — silence.**
+They are indistinguishable in principle, not merely in this implementation. So the TTL cannot be
+shortened to catch orphans without killing real waits, and no cleverness avoids that. Left as **Q5**,
+deliberately undecided; timing out a genuine wait is not obviously acceptable, since a real prompt can
+go unanswered for an hour.
+
+The idea that came out of that discussion and now leads Q5: **let the button acknowledge it.** `WAIT`
+never times out, and a short press clears stale sessions. That stops trying to infer an unknowable fact
+and asks the only party that actually knows — the person standing at the device, looking at the red
+lamp. It fits D35's principle that the button publishes raw presses and the host decides what they
+mean, and D58 reserved only the *long* press. The dependency worth knowing: a press currently publishes
+to `wigwag/button` over MQTT, and the serial transport has **no device→host event format at all** —
+`CONTEXT.md` defines host→device command lines and human-readable output coming back, nothing
+structured. So the wired path needs one before the button can acknowledge anything there.
+
+### Also closed, and two unknowns
+
+MCP `Elicitation` is the same condition — *"when an MCP server requests user input during a tool
+call"* — and was unwired. Now `Elicitation → WAIT`, `ElicitationResult → BUSY`, and note that one
+*does* have an exit edge. Worth having on a project that leans on MCP servers.
+
+The two inert entries were **removed** rather than left. Leaving unexplained dead wiring is precisely
+how the combined-matcher bug survived for months, and the template now carries a comment saying so.
+
+Still unknown, and not asserted either way: `AskUserQuestion` has no documented event — the docs are
+explicit that `Elicitation` is MCP-only — so a session blocked on a question may emit nothing. An
+auth/re-login prompt has `auth_success` for the success but nothing documented for the prompt.
+
+### Two mistakes of mine worth recording
+
+I claimed "`WAIT` has never fired" from a log that had stopped writing twelve minutes earlier, because
+the user had started their own daemon and mine had died. The conclusion happened to be right; the
+evidence was worthless. And I read `pyocd cmd`'s "Halted" as evidence the core had crashed, when
+`pyocd cmd` halts the target on connect — I had halted it by asking.
+
+---
+
 ## 2026-08-15 — a Wi-Fi test command, and the amber lamp that never existed
 
 **Done** — `test wifi`, and the fail-visible pattern replaced. D121, D122.
