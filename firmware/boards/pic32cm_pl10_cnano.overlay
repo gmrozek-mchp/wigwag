@@ -22,6 +22,45 @@
 
 / {
 	soc {
+		/*
+		 * Watchdog and reset controller — the fifth and sixth PL10 devicetree nodes this
+		 * project has had to add. Driver (wdt_mchp_g1.c) and binding both exist upstream and
+		 * the JH, SG and SAM families instantiate them; this family does not. Addresses and
+		 * the IRQ come from hal_microchip's pic32cm6408pl10048.h and happen to match JH
+		 * exactly (WDT 0x40002000 IRQ 1, RSTC 0x40000c00), and the WDT is the same module
+		 * (U2251), so the timeout limits carry over: PER maxes at CYC16384, hence 16384 ms.
+		 */
+		wdt: watchdog@40002000 {
+			compatible = "microchip,wdt-g1";
+			reg = <0x40002000 13>;
+			interrupts = <1 0>;
+			interrupt-names = "wdt-ew";
+			clocks = <&mclkperiph CLOCK_MCHP_MCLKPERIPH_ID_APBA_WDT>;
+			clock-names = "mclk";
+			max-installable-timeout-count = <1>;
+			max-timeout-window = <0x4000>;		/* 16384 ms */
+			max-timeout-window-mode = <0x8000>;	/* 32768 ms */
+			min-window-limit = <0x8>;		/* 8 ms */
+			status = "okay";
+		};
+
+		/*
+		 * Reset controller: the address of record for RCAUSE, which is how the firmware reports
+		 * *why* it rebooted. On an appliance whose only output is three lamps, "reset by
+		 * watchdog" is the difference between a diagnosable fault and a mystery.
+		 *
+		 * Left **disabled** on purpose. Enabling it binds hwinfo_mchp_g1.c, which was written
+		 * against the JH revision of this peripheral and reads the wrong register at the wrong
+		 * offset with the wrong bit positions on PL10 — it answers, and the answer is wrong.
+		 * wdog_wdt.c reads RCAUSE itself, at the address given here. Enable this once the
+		 * upstream driver understands this family (docs/upstreaming-to-zephyr.md).
+		 */
+		rstc: rstc@40000c00 {
+			compatible = "microchip,rstc-g1-reset";
+			reg = <0x40000c00 0x400>;
+			status = "disabled";
+		};
+
 		tcc0: tcc@42001800 {
 			compatible = "microchip,tcc-g1-pwm";
 			reg = <0x42001800 0x80>;
@@ -117,6 +156,11 @@
 	};
 
 	aliases {
+		/*
+		 * watchdog0 is the name every in-tree consumer uses, and the JH dtsi defines it at SoC
+		 * level. Defined here instead because PL10 has no wdt node upstream to hang it off.
+		 */
+		watchdog0 = &wdt;
 		sw0 = &button0;
 		lamp-green = &lamp_green;
 		lamp-yellow = &lamp_yellow;

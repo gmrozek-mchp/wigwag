@@ -18,6 +18,8 @@
 #include "rnwf_at.h"
 #include "rnwf_at_cmds.h"
 #include "rnwf_uart.h"
+#include "wdog.h"
+#include "wdog_wdt.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
@@ -184,8 +186,11 @@ static void on_link(void *user, bool linked)
  *   - a second context needs the AT client concurrently. button.c will want to publish from an
  *     interrupt; a flag consumed by this loop is enough, but a message queue feeding a dedicated
  *     thread is the textbook shape if it grows past that;
- *   - the watchdog needs independent proof that more than one thread is alive;
  *   - main's stack stops having comfortable headroom once credentials lengthen its commands.
+ *
+ * The watchdog was the one trigger on this list that looked like it might force a split, and it did
+ * not: proving both contexts are alive needs each to check in with wdog.c, which is independent of
+ * how many threads there are. What it did change is that this loop no longer feeds unconditionally.
  */
 static void at_service(bool at_ready)
 {
@@ -272,6 +277,21 @@ static void at_service(bool at_ready)
 			       link_reason_str(link_state.reason));
 		}
 
+		/*
+		 * End of a complete pass: bytes drained, AT ticked, button sampled, link re-evaluated.
+		 * Beat here rather than at the top of the loop so the beat attests to the work, not to
+		 * having been scheduled.
+		 */
+		now = (uint32_t)k_uptime_get();
+		wdog_beat(WDOG_TASK_AT, now);
+
+		/*
+		 * Feeding lives here because this loop is the one with a natural 10 ms cadence — but it
+		 * feeds on wdog.c's verdict, not its own liveness. If the render thread stops, this loop
+		 * keeps running and deliberately stops feeding.
+		 */
+		wdog_wdt_service(now);
+
 		deadline += AT_POLL_MS;
 		k_sleep(K_TIMEOUT_ABS_MS(deadline));
 	}
@@ -286,6 +306,9 @@ int main(void)
 	bool at_ready;
 
 	printk("wigwag: starting\n");
+
+	/* Before anything else can obscure it: why did the last run end? */
+	wdog_report_reset_cause();
 
 	/*
 	 * Rename the thread we are on, so a stack or thread report says "at" rather than "main".
@@ -312,6 +335,13 @@ int main(void)
 		printk("wigwag: module UART up, connecting to \"%s\"\n", module_cfg.ssid);
 		rnwf_at_start(&at_client, (uint32_t)k_uptime_get());
 	}
+
+	/*
+	 * Armed last, deliberately. Every task in enum wdog_task must already be beating, and the lamp
+	 * selftest holds the CPU for 1.6 s during lamp_pwm_init() — arming before it would guarantee a
+	 * reset loop that looked like a hardware fault.
+	 */
+	(void)wdog_wdt_init((uint32_t)k_uptime_get());
 
 	/* Becomes the AT service loop and never returns. */
 	at_service(at_ready);

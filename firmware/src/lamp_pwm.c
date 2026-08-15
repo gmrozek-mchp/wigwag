@@ -6,6 +6,8 @@
 
 #include "lamp_pwm.h"
 
+#include "wdog.h"
+
 #include <zephyr/device.h>
 #include <zephyr/drivers/pwm.h>
 #include <zephyr/kernel.h>
@@ -100,6 +102,13 @@ static void lamp_thread(void *a, void *b, void *c)
 
 		f = lamp_render(state, trusted, (uint32_t)k_uptime_get(), since);
 		render(&f, brightness, !trusted);
+
+		/*
+		 * Check in *after* rendering, so the beat means "a frame reached the hardware" rather
+		 * than "this thread woke up". A thread that wakes and then wedges in the PWM driver is
+		 * exactly the failure that leaves the lamps frozen on a stale state.
+		 */
+		wdog_beat(WDOG_TASK_LAMP, (uint32_t)k_uptime_get());
 
 		/*
 		 * Absolute deadlines, so a slow frame does not push the animation's rate around

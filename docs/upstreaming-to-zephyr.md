@@ -1,6 +1,6 @@
 # Upstreaming to Zephyr mainline
 
-Three mainline issues were found during Phase 2 (see `JOURNAL.md`, 2026-08-14). Each is worked around
+Four mainline issues were found during Phase 2 (see `JOURNAL.md`, 2026-08-14). Each is worked around
 locally — in `firmware/patches/` or in the board overlay — and each should go upstream, per ADR-0006's
 ladder: fix it locally, then contribute it, rather than living on a fork.
 
@@ -24,6 +24,7 @@ Tree state when the bugs were found: mainline pinned at
 | 1 | `microchip,{tc,tcc}-g1-pwm` name the third `pwm-cell` `polarity`, not `flags` | — | — | not submitted |
 | 2 | `pic32cm_pl10_cnano` declares LED0 `GPIO_ACTIVE_HIGH`; hardware is active low | — | — | not submitted |
 | 3 | `pic32cm_pl10_cnano` enables `XOSC32K` (crystal disconnected by default), silently taking PA24 **and PA25** | — | — | not submitted |
+| 4 | `hwinfo_mchp_g1.c` reads PIC32CM PL's `RCAUSE` at the wrong offset with JH's bit positions | — | — | not submitted |
 
 Searched upstream on 2026-08-14: **no existing issue or PR covers any of them.** Possibly adjacent, open:
 [#107066](https://github.com/zephyrproject-rtos/zephyr/issues/107066) "Unexpected DT binding
@@ -58,7 +59,7 @@ Commit message rules that bite:
 
 ## Routing
 
-All three touch the same `MAINTAINERS.yml` area:
+All four touch Microchip areas; bug 4 is in a driver rather than a board or binding:
 
 ```
 Microchip PIC32 Platforms:
@@ -69,6 +70,10 @@ Microchip PIC32 Platforms:
          dts/bindings/*/microchip,*-g*     <- bug 1
   labels: "platform: Microchip PIC32"
 ```
+
+Bug 4 is in `drivers/hwinfo/hwinfo_mchp_g1.c`, which `MAINTAINERS.yml` places under the same
+Microchip PIC32 platform area by copyright and by the `mchp` filename, so the routing is the same.
+The `Drivers: HWINFO` area maintainers should be added as reviewers as well.
 
 All are Microchip-authored files (© 2026 Microchip), so there may be an internal review path in
 parallel with the upstream PR.
@@ -348,3 +353,122 @@ does.
 3. Confirm `wigwag: polarity flags 0x1` still appears at boot — that line exists precisely so a
    silent regression here cannot hide (D74).
 4. Record the old and new SHA in `JOURNAL.md`, per the pin-moving rule in `firmware/README.md`.
+
+---
+
+## Bug 4 — `hwinfo_mchp_g1.c` misreads `RCAUSE` on PIC32CM PL
+
+**The worst of the four**, because it does not fail — it *answers*, and the answer is wrong. Bug 1 is
+silent; this one is confidently incorrect, which is harder to catch and worse to trust. A device
+asking "did the watchdog just reboot me?" gets "no, someone pressed reset."
+
+### Evidence
+
+The driver takes RSTC's devicetree `reg` address and reads a byte from offset 0, then decodes bits
+using `enum rstc_g1_rcause` from `include/zephyr/drivers/reset/mchp_rstc_g1.h`:
+
+```c
+volatile uint8_t *rcause_reg = (uint8_t *)(DT_REG_ADDR(RSTC_INST));
+uint8_t rcause = *rcause_reg;
+...
+if ((rcause & BIT(RSTC_G1_RCAUSE_WDT)) != 0) {	/* RSTC_G1_RCAUSE_WDT == 5 */
+	result |= RESET_WATCHDOG;
+}
+```
+
+That matches the JH revision of the peripheral exactly, and matches PL's not at all:
+
+| | PIC32CM JH (`pic32cm_jh00/…/rstc.h`) | PIC32CM PL (`pic32cm_pl10/…/rstc.h`) |
+|---|---|---|
+| `RCAUSE` offset | `0x00` | **`0x04`** — `0x00` is `CTRLA` |
+| `RCAUSE` width | 8-bit (`__I uint8_t`) | **32-bit** (`__I uint32_t`) |
+| register mask | `0x77` | **`0x7B`** |
+| POR | 0 | 0 |
+| brownout | `BODCORE` 1, `BODVDD` 2 | **`BORVDD` 1 only** |
+| `EXT` | 4 | **3** |
+| `WDT` | 5 | **4** |
+| `SYST` | 6 | **5** |
+| bit 6 | — | **`LOCKUP`** |
+| bit 7 (`BACKUP` in the enum) | — | — (reserved on both) |
+
+Confirmed against the PL10 datasheet §16.6.2 register diagram, which also states each reset "sets
+the bit corresponding to the Reset source to 1 and all other bits are written to 0" — so `RCAUSE`
+needs no clearing, and the absent `z_impl_hwinfo_clear_reset_cause()` is correct behaviour, not an
+omission.
+
+Two consequences, both observed:
+
+1. The read lands on `CTRLA`, which reads back 0 in normal operation, so **every** reset cause comes
+   back as "none" — `hwinfo_get_reset_cause()` returns 0 with a success status.
+2. Even at the right address the mapping is off by one bit from `EXT` upward, so a watchdog reset
+   (PL bit 4) would decode as `RESET_PIN | RESET_USER`, and a CPU lockup (PL bit 6) as
+   `RESET_SOFTWARE`.
+
+### How it was found (useful in the issue)
+
+A deliberately wedged thread was used to make a real watchdog reset happen on a
+`pic32cm_pl10_cnano`. The reset fired exactly on schedule, and the boot that followed reported no
+cause at all. Reading `0x40000c04` directly returned `0x10` — bit 4, `WDT` — which is what the
+datasheet predicts and what the driver never looks at.
+
+### Suggested fix
+
+The two revisions are different enough that a per-family compile-time split is needed, in the shape
+`mchp_rstc_g1.h` already uses for `RSTC_UNSUPPORTED_RCAUSE`:
+
+- keep the offset in devicetree rather than assuming 0 — either a second `reg` entry for `RCAUSE` or
+  a `#define` per family;
+- select the bit positions on `CONFIG_SOC_FAMILY_MICROCHIP_PIC32CM_PL` (POR 0, BORVDD 1, EXT 3, WDT
+  4, SYST 5, LOCKUP 6) versus the existing JH/SAM set;
+- map PL's `LOCKUP` to `RESET_CPU_LOCKUP`, which the current code never reports for any family;
+- correct `z_impl_hwinfo_get_supported_reset_cause()`, which currently claims
+  `RESET_LOW_POWER_WAKE` and `RESET_BROWNOUT` unconditionally.
+
+Note also that `wdt_mchp_g1.c` line 23 defines `WDT_FLAG_ONLY_ONE_TIMEOUT_VALUE_SUPPORTED` from
+`DT_PROP(DT_NODELABEL(wdog), …)` — node label `wdog`, which exists in no in-tree devicetree; the
+label everywhere is `wdt`. It compiles only because the macro is never expanded: the `#if
+defined(...)` guarding its use tests an object-like macro that is *always* defined, so the block is
+compiled unconditionally and the flag it was meant to gate on is never consulted. Worth folding into
+the same issue as a drive-by.
+
+### Commit message
+
+```
+drivers: hwinfo: mchp: fix RCAUSE access on PIC32CM PL
+
+The driver read RCAUSE as an 8-bit register at offset 0 with the bit
+positions used by PIC32CM JH.  On PIC32CM PL, RCAUSE is a 32-bit
+register at offset 0x04 -- offset 0x00 is CTRLA -- and the flags from
+EXT upward sit one bit lower, with LOCKUP occupying bit 6.
+
+The result was not a failure but a wrong answer: reads landed on CTRLA
+and returned 0, so hwinfo_get_reset_cause() reported no cause for any
+reset, and at the correct address a watchdog reset would have decoded
+as RESET_PIN.
+
+Verified on pic32cm_pl10_cnano by forcing a watchdog reset with a
+wedged thread: RCAUSE reads 0x10 (bit 4, WDT), matching the PL10
+datasheet section 16.6.2, and hwinfo now reports RESET_WATCHDOG.
+
+Fixes #NNNN
+
+Signed-off-by: Your Name <you@example.com>
+```
+
+This one is **not** carried in `firmware/patches/`: wigwag reads `RCAUSE` itself in
+`firmware/src/wdog_wdt.c` and leaves the `rstc` devicetree node disabled, so that no driver binds and
+answers wrongly. When the fix lands, enable that node, set `CONFIG_HWINFO=y`, and replace the direct
+read with `hwinfo_get_reset_cause()`.
+
+## Missing PL10 devicetree nodes — a contribution, not a bug
+
+Separately from the four bugs, this project has now had to create **six** devicetree nodes that PL10
+lacks entirely, in each case with the driver and binding already in mainline and sibling families
+already instantiating them: `tcc0`, `sercom0`'s UART configuration, its two `gclkperiph` channels,
+`wdt`, and `rstc`. These are additive SoC-level enablement rather than fixes, and belong in
+`dts/arm/microchip/pic32c/pic32cm_pl/common/pic32cm_pl.dtsi` with `status = "disabled"`, following
+the JH dtsi's shape. `firmware/boards/pic32cm_pl10_cnano.overlay` holds all of them, with every
+address, IRQ number and limit cited to its source — that overlay is the raw material for the PR.
+
+Do not send this until the watchdog and PWM work is settled on hardware, and send it as one PR per
+peripheral.

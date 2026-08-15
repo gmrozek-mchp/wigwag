@@ -220,7 +220,10 @@ FET selection: logic-level N-channel, Vgs(th) low enough to fully enhance at 3.3
 | **D91** | **App-local devicetree binding `wigwag,lamps`** — `pwm-leds` allows only `label` and `pwms` on children. Not for upstream; a local `vendor-prefixes.txt` registers the prefix | settled |
 | **D87** | **Presses are published unretained and dropped if the link is down** — a press is an event, not a state, and one delivered late would misreport when it happened (D35) | settled |
 | **D85** | **`LAMP_IDLE_DIM = 128`** (12.6 % duty), chosen by eye from a hardware sweep. Revisit with real 10 mm lamps at 20–60 mA; `wigwag/brightness` is the place for per-desk trimming | settled |
-| **D81** | **The AT service loop runs on the main thread**, renamed `at` for reports. A dedicated thread costs ~600 B (~7 % of SRAM) and would *not* reduce peak depth, since main's peak is `max(init, loop)` rather than their sum. Revisit when a second context needs the AT client, when the WDT needs multi-thread liveness, or if credentials lengthen its commands | settled |
+| **D81** | **The AT service loop runs on the main thread**, renamed `at` for reports. A dedicated thread costs ~600 B (~7 % of SRAM) and would *not* reduce peak depth, since main's peak is `max(init, loop)` rather than their sum. Revisit when a second context needs the AT client, when the WDT needs multi-thread liveness, or if credentials lengthen its commands. *The WDT clause is now resolved — see D93: multi-thread liveness needed check-ins, not threads* | settled |
+| **D93** | **Watchdog feeding is earned, not automatic** — both the AT loop and the render thread must check in with `wdog.c` within 500 ms or the device stops feeding and reboots ~2 s later. A watchdog fed from one loop certifies half the system and silently vouches for the other half (ADR-0016). Demonstrated on hardware with a deliberately wedged render thread | settled |
+| **D94** | **Detection budget: 500 ms staleness + 2 s hardware window = ~2.5 s**, inside D34's 10 s. Normal mode, no closed window — a minimum window catches a task running too fast, which is not a failure this device has, and would let the feed itself reset a healthy device | settled |
+| **D95** | **`CONFIG_HWINFO` is not used; the firmware reads `RSTC.RCAUSE` itself** and leaves the `rstc` node disabled. `hwinfo_mchp_g1.c` reads PL10's RCAUSE at offset 0 with JH's bit positions — it returns 0 for every reset, and would call a watchdog reset `RESET_PIN` at the right address. Upstream bug 4; verified `rcause 0x10` on a real watchdog reboot | settled |
 
 ---
 
@@ -389,7 +392,8 @@ Remaining Phase 0 loose end: nothing is committed to git yet (D16).
     SERCOM0 through a 3.3 V USB-UART adapter, tested against the real broker. **Not `native_sim`:**
     Zephyr's POSIX architecture does not work on macOS (D66, ADR-0015).
 16. `lamp.c`: 3 PWM channels, ~100 Hz render, gamma-corrected steady/breathe/blink/flicker.
-17. `button.c` (debounce + publish) and `link.c` (supervision → amber flicker, WDT).
+17. `button.c` (debounce + publish) and `link.c` (supervision → amber flicker, WDT). **Done** — plus
+    brightness (D88–D90), `wigwag/online` (D92) and the watchdog (ADR-0016, D93–D95).
     `link.c` done and verified across all three failure domains (D75). `button.c` done and verified
     on hardware — 14 presses, no duplicates, long-hold at 3 s — but **polled rather than
     interrupt-driven** (D86), since PL10 has no `eic` node. The WDT is the remaining piece.

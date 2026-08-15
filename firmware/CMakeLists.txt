@@ -14,4 +14,6 @@ target_sources(app PRIVATE
   src/button_gpio.c # the polled GPIO binding
   src/lamp.c        # pure animation: (state, link, time) -> three levels
   src/lamp_pwm.c    # the Zephyr renderer: gamma, polarity, its own thread
+  src/wdog.c        # pure liveness accounting: is every task that matters still beating?
+  src/wdog_wdt.c    # the WDT peripheral, and the reset-cause report at boot
 )

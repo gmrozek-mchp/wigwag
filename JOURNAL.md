@@ -7,6 +7,102 @@ Entries record what was done, why, and — importantly — what was tried and re
 
 ---
 
+## 2026-08-14 — the watchdog, and why feeding it from the AT loop would have been worthless
+
+**Done** — `wdog.c` (pure liveness accounting) + `wdog_wdt.c` (the WDT and the reset-cause report),
+two new devicetree nodes, and 6 159 host checks. **ADR-0016**, D93–D95. Plan item 17 is complete.
+
+**The insight the whole thing turns on.** The obvious implementation — feed the watchdog from the AT
+service loop, which already runs every 10 ms — is worse than no watchdog, because it would certify
+half the system while silently vouching for the other half. The render thread could be dead with the
+lamps frozen on a stale state, the AT loop would keep feeding, and the device would stay up
+indefinitely displaying a lie. That is D75's lesson arriving from a new direction: *feeding must be
+earned*. Both contexts check in, and the feeder refuses unless both are recent.
+
+Each task beats **after** doing its work, not on waking — the render thread after the frame reaches
+the PWM hardware, the AT loop after draining the UART, ticking the state machine, sampling the button
+and re-evaluating the link. A beat that only proves the scheduler ran would happily certify a thread
+wedged inside a driver.
+
+500 ms of allowed staleness (fifty missed turns at 10 ms, and 20× the ~24 ms the AT loop can block in
+a full-length transmit) plus a 2 s hardware window: ~2.5 s worst case, inside D34's 10 s.
+
+**Demonstrated, not assumed.** A temporary `k_sleep(K_FOREVER)` in the render thread after 15 s:
+```
+33.1  wigwag: NOT FEEDING, lamp task stale 506 ms
+33.3  wigwag: NOT FEEDING, lamp task stale 766 ms
+ ...
+35.1  *** Booting Zephyr OS build 357467a011cd ***
+35.1  wigwag: RESET BY WATCHDOG (rcause 10)
+```
+Refusal at the first stale sample, reset exactly 2.0 s later, repeating every ~17.6 s. The AT loop was
+running normally throughout — `at RESETTING`/`BACKOFF` transitions continue right up to the reset —
+which is the point: an unconditional feed from there would have kept this device alive forever.
+
+**Then the other direction**: fake module attached, full 15-step connect, `link LINKED` at 1.9 s, then
+**128 s of silence** — no refusal, no reset, through every long transmit and 5 s keepalive poll. An
+earlier 95 s run without the module confirmed the same across the reset/backoff cycle; the AT timeout
+counter climbing 3→7 monotonically is the proof no reboot happened.
+
+### The bug this uncovered: `hwinfo` answers wrongly on this part
+
+The first fault-injection run reset perfectly and printed **nothing** about the cause. `hwinfo` was
+configured, the driver was compiled, the `rstc` node was enabled, and `hwinfo_get_reset_cause()`
+returned success with a cause of 0.
+
+`hwinfo_mchp_g1.c` was written against the **JH** revision of RSTC, and PL10's is a different
+peripheral:
+
+| | JH (assumed) | PL10 (actual, datasheet §16.6.2) |
+|---|---|---|
+| RCAUSE offset / width | `0x00`, 8-bit | **`0x04`, 32-bit** — `0x00` is `CTRLA` |
+| EXT / WDT / SYST | 4 / 5 / 6 | **3 / 4 / 5** |
+| bit 6 | — | **LOCKUP** |
+
+So the driver read `CTRLA`, got 0, and matched nothing. Reading `0x40000c04` directly returns `0x10`
+— bit 4, WDT — exactly as the datasheet predicts. **Even at the right address the answer would have
+been wrong**, not absent: a watchdog reset would decode as `RESET_PIN | RESET_USER`. That makes this
+the worst of the four upstream bugs found so far — bug 1 fails silently, this one fails
+*confidently*. Written up as bug 4 in `docs/upstreaming-to-zephyr.md`.
+
+The fix here: read `RCAUSE` in `wdog_wdt.c`, at the address the devicetree node gives, and leave that
+node **disabled** so no driver binds and answers wrongly. `CONFIG_HWINFO` dropped entirely, which also
+reclaimed 48 bytes of flash. Also noted for the same issue: `wdt_mchp_g1.c` derives a flag from
+`DT_NODELABEL(wdog)`, a label that exists in no in-tree devicetree — harmless only because the macro
+is never expanded, and its `#if defined(...)` guard tests an always-defined object macro, so the check
+it was meant to gate runs unconditionally.
+
+### Dead ends and small things
+
+- **`wdt` and `rstc` are the fifth and sixth devicetree nodes PL10 lacks.** Driver and binding both
+  upstream, JH/SG/SAM all instantiate them, PL10 has nothing. Addresses and IRQ verified from
+  `hal_microchip` (WDT `0x40002000` IRQ 1, RSTC `0x40000c00`) and they happen to match JH exactly —
+  which is precisely the coincidence that makes the RCAUSE difference easy to miss.
+- **No callback on the timeout.** A callback would run in interrupt context on a device already known
+  to be unreliable, to print through a UART that may be what wedged. `RCAUSE` carries the same
+  information one boot later, safely.
+- **Nothing clears `RCAUSE`.** §16.6.2: each reset sets its own bit and writes all others to 0. My
+  first draft called `hwinfo_clear_reset_cause()` — which is both unimplemented for this family and
+  conceptually wrong.
+- **`WDT_OPT_PAUSE_HALTED_BY_DBG` is requested explicitly** even though the peripheral does it by
+  default and the driver applies nothing. This part is halted by a debugger constantly; the
+  requirement should be visible rather than inherited by luck.
+- Boot-order trap: arming before `lamp_pwm_init()` would trip on the 1.6 s lamp selftest and produce a
+  reset loop that looks exactly like a hardware fault. Armed last, after every task is beating.
+- `wdog.c` needed `<stddef.h>` for `NULL` — it includes no Zephyr headers by design, so it gets
+  nothing for free.
+- The reset report stays **silent** for POR, EXT and SYST. Those are the ordinary ways this board
+  starts, and a line on every boot trains the eye to skip the one line that matters.
+
+**Measured** — flash 23 272 B (37.88 %), RAM **4 528 B (55.27 %)**. The watchdog costs **16 bytes of
+SRAM**: 8 for the timestamps, 8 for the arm flag and gripe rate-limiter. Cheapest safety mechanism in
+the firmware by a wide margin.
+
+**Host tests** — 7 730 checks total, 0 failures: rnwf_at 100, link 25, lamp 1 423, button 23, wdog
+6 159.
+
+---
+
 ## 2026-08-14 — wigwag/online: the birth message, and the Last Will finally verified
 
 **Done** — `main.c` publishes `1` retained to `wigwag/online` once per connection, closing the last

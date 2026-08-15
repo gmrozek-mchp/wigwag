@@ -15,7 +15,11 @@ firmware/
 ├── west.yml                              pinned, minimal manifest (ADR-0014)
 ├── CMakeLists.txt  prj.conf
 ├── src/main.c
-└── boards/pic32cm_pl10_cnano.overlay     the D49 TCC0 PWM enablement
+├── src/*.c                               one subsystem per file; pure logic split from its
+│                                         Zephyr adapter (lamp/lamp_pwm, button/button_gpio,
+│                                         wdog/wdog_wdt) so the logic is host-testable
+├── tests/                                host unit tests, plain clang: `make -C firmware/tests`
+└── boards/pic32cm_pl10_cnano.overlay     TCC0 PWM (D49), SERCOM0, WDT, RSTC, lamps, SW0
 ```
 
 The west workspace top directory is the **repository root**, so `zephyr/`, `modules/`, `.west/`
@@ -172,6 +176,29 @@ run the fake module against it:
 ```
 
 **Do not** use a 5 V adapter: PA04/PA05 are on the VDD domain at 3.3 V.
+
+## The watchdog
+
+Armed at the end of `main()` with a 2 s window, and fed from the AT loop **only when both the AT loop
+and the render thread have checked in within 500 ms** (ADR-0016). Two things this changes for anyone
+working on the firmware:
+
+- **Any task that blocks for more than 500 ms will reboot the device.** That includes a `k_msleep()`
+  added while debugging, or a long busy-wait in either loop. The console says which task went quiet
+  before the reset, and the next boot prints `RESET BY WATCHDOG (rcause 10)`.
+- **Halting in a debugger is safe.** The WDT pauses while the core is halted, so breakpoints and
+  single-stepping do not cause resets.
+
+Adding a task whose liveness the lamps depend on means adding it to `enum wdog_task` **and** calling
+`wdog_beat()` from it. Adding the enum entry alone stops the device feeding — the safe direction, but
+it presents as a reboot loop.
+
+To see the mechanism work, wedge the render thread deliberately: add `if (k_uptime_get() > 15000) {
+k_sleep(K_FOREVER); }` after the `wdog_beat()` call in `lamp_thread()`, flash, and watch the device
+refuse to feed and reboot every ~18 s. **Remove it afterwards.**
+
+`CONFIG_HWINFO` is deliberately off: its Microchip driver misreads this part's `RCAUSE`, so
+`wdog_wdt.c` reads the register directly (D95, and bug 4 in `docs/upstreaming-to-zephyr.md`).
 
 ## Moving the Zephyr pin
 

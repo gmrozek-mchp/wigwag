@@ -16,19 +16,26 @@ BIN   := $(BUILD)/test_rnwf_at
 LINK  := $(BUILD)/test_link
 LAMP  := $(BUILD)/test_lamp
 BTN   := $(BUILD)/test_button
+WDOG  := $(BUILD)/test_wdog
 SIM   := $(BUILD)/at_host
 SRCS  := test_rnwf_at.c ../src/rnwf_at.c
 DEPS  := ../src/rnwf_at.h ../src/rnwf_at_cmds.h
 
-.PHONY: all link lamp button sim clean
-all: $(BIN) $(LINK) $(LAMP) $(BTN)
+.PHONY: all link lamp button wdog sim clean
+all: $(BIN) $(LINK) $(LAMP) $(BTN) $(WDOG)
 	./$(BIN)
 	./$(LINK)
 	./$(LAMP)
 	./$(BTN)
+	./$(WDOG)
 
 $(BIN): $(SRCS) $(DEPS) | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $(SRCS) $(LDFLAGS)
+
+wdog: $(WDOG)
+	./$(WDOG)
+$(WDOG): test_wdog.c ../src/wdog.c ../src/wdog.h | $(BUILD)
+	$(CC) $(CFLAGS) -o $@ test_wdog.c ../src/wdog.c $(LDFLAGS)
 
 button: $(BTN)
 	./$(BTN)
