@@ -141,6 +141,16 @@ The sender is a hook that cannot see our errors and must not be affected by them
 - **AT client** — `firmware/src/rnwf_at.c`, the host-side driver for the module.
 - **keepout** — the RF exclusion zone around the module's PCB antenna: ≥10 mm to plastic,
   ≥31.75 mm to metal, module at the board edge with ground-plane edges aligned. Binding on both
-  the PCB layout and the enclosure (ADR-0002).
+  the PCB layout and the enclosure (ADR-0002). On the board it is **all four layers**, not just the
+  top: a **5.3 mm × 15.73 mm** region with no copper on any layer, and no board material either,
+  since the antenna end overhangs the outline (ADR-0024, D133). "Ground-plane edges aligned" means
+  the module's **ground outline** edge, 5.3 mm back from its PCB edge — not the module outline.
+- **antenna end** — the top edge of the board, where the module sits and its antenna overhangs.
+  The far end from every noise source and from the magnets, and the direction the 10 mm and
+  31.75 mm clearances are measured from (D134).
+- **ground plane as antenna** — the host ground plane is part of the radiator, with a measured
+  cost: the same module averages 45% efficiency on a 57.2 × 25.4 mm board and 69% on 85 × 40 mm
+  (`DS70005544C` Table 2-3 note 1). The board is sized for the antenna, not for the parts, and
+  the plane is never shrunk to save panel area (D134).
 - **lamp rail** — the 5 V USB rail that feeds the LED anodes. Distinct from the **3.3 V rail**
   that feeds the MCU and module. Green LEDs cannot run from 3.3 V (ADR-0009).

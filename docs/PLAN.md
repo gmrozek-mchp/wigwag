@@ -259,6 +259,12 @@ FET selection: logic-level N-channel, Vgs(th) low enough to fully enhance at 3.3
 | **D128** | **The module's real baud rate is 230 400, not the 115 200 the firmware is built around.** `DS70005544C` Table 2-1: `UART1_TX`/`UART1_RX` default to 230 400 8N1, no flow control — and the add-on board's PC-companion mode confirms it. Every 115 200 in the tree traces to `fake_rnwf02.py` (ADR-0015), which was never the module. At 230 400 the 256-byte ring drains 230 B per `main.c` 10 ms tick instead of 115 B, so margin falls from ~2.2× to ~1.1× and ~1 ms of scheduling jitter overflows it. Needs a measured call between raising `current-speed`, shortening the poll, widening the ring, or fitting flow control — `PA06`/`PA07` are reserved as `SERCOM0` RTS/CTS (`txpo = 2`) so the last option stays open without a respin | open |
 | **D129** | **There is no event for a user rejecting or interrupting a tool call**, and `PermissionDenied` is not one — it fires only "when auto mode denies a tool call". Verified against the hooks documentation after the wiring for it proved inert on hardware. So a `WAIT` entered by `PermissionRequest` has **no exit edge**: it clears only when the user next types (`UserPromptSubmit`) or the daemon's session TTL expires. MCP `Elicitation` is the same condition and *does* have an exit edge (`ElicitationResult`), so both are wired | settled |
 | **D130** | **Hooks are edge-triggered with no heartbeat**, so any state entered by an event and left by none is a trap. `IDLE`, `BUSY` and `ERROR` all have exit edges; `WAIT` does not (D129). That is the whole bug class, and it also means a legitimately-waiting session and an orphaned one emit identical data — silence — so they cannot be distinguished. Deleting a session in the history UI emits no `SessionEnd`, so it orphans; with max-priority aggregation (D30) one stale `WAIT` pins the lamps red until the 15-minute TTL | settled |
+| **D131** | **The schematic is one flat sheet on 11 × 17 in (ANSI B / US Ledger), landscape.** KiCad Page Settings → `B`, i.e. `(paper "B")` in the `.kicad_sch`. The whole design is five blocks — MCU, module, bridge + USB-C, LDO, lamps — which fits one B-size sheet, so there are **no hierarchical sheets and no off-sheet connectors** to follow while reading it. Set the page before placing the first symbol; changing it afterwards re-flows everything already drawn | settled |
+| **D132** | **The stackup is `signal / GND / PWR / signal` with L2 solid and unbroken as the sole reference plane** ([`hardware/STACKUP.md`](../hardware/STACKUP.md), ADR-0024). D27's "dedicated PWR plane" is refined, not reversed: with two rails, **L3 is necessarily split** (3V3 island + 5 V lamp-rail island, GND filling the rest), so the governing rule is **no signal crosses a plane split** — USB D+/D− and the module UART stay on L1 over solid L2, and L4 carries only slow nets. On a 1.6 mm build L1 sits ~0.2 mm from L2 while L4 sits ~0.2 mm from the *split* L3, which is the entire reason for that division | settled |
+| **D133** | **The antenna keepout is a four-layer exclusion with real geometry, and the board outline is cut back to meet it.** `DS70005544C` §2.3/§2.6.1 and p. 13: **no copper on any layer in a 5.3 mm × 15.73 mm region** from the module's antenna-end PCB edge, the **L2 plane edge coincident with the module's ground outline edge**, and the antenna end **overhanging the board** — §2.6.1 prefers no PCB material below the antenna and Figure 2-9 labels it "Best Case". 16.42 mm of the 21.72 mm module stays on board. Keeping material with an all-layer keepout is the documented fallback ("Good Case"). Note a datasheet inconsistency: the §2.3 bullets say 31.75 mm metal / 10 mm plastic, the Figure 2-8 caption says 31.75 mm for *both*; the project follows the bullets (D45) and settles the enclosure question by measurement | settled |
+| **D134** | **The module sits at the top edge and every noise source sits at the base.** LDO, USB-C receptacle, the full-speed bridge and the three FETs — the broadband offender on this board — all go at the far end from the antenna, per §2.5's "keep the module far away from high-frequency clock signals and any other sources of RF energy". **This is why the magnets are at the base:** Phase 4's "magnets at the base only" (item 24) is the 31.75 mm metal keepout expressed mechanically, not a rule of thumb, and the resulting antenna-to-magnet distance is ~70 mm. The USB cable exits at the base, which the enclosure wanted anyway | settled |
+| **D135** | **Bulk capacitance has a ceiling, and it is set by three limits that pull against each other.** `MCP1826` §4.3 recommends **22 µF max** on the LDO output; §4.4 wants **`CIN` ≥ `COUT`** for step loads; `MCP2221A` §1.6.2.2 allows **≤ 10 µF across `VBUS`** without inrush limiting. `VBUS` *is* the LDO input and the 3V3 net *is* its output, so the last two cap total 3V3 capacitance near 10 µF — under half what the LDO alone permits. Fitted: 10 µF `VBUS`, 4.7 µF at `VOUT` (the datasheet's own characterisation value), 4.7 µF + 100 nF at module `VDD`, 100 nF per MCU supply pin pair plus `VDDIO2`, **0.47 µF at the bridge's `VUSB`** (§1.6.2.2 gives 0.22–0.47 µF, where the tree said only "a ceramic cap"). Whether ~10 µF holds module `VDD` ≥ 3.0 V through a **311 mA typ** TX burst (Table 3-5) is **not derivable** — the LDO gives transient curves but no numeric ΔV, and the burst duration is unspecified — so bulk goes on **1206 pads** that take 22 µF and `VBUS` gets a **0 Ω series footprint** for inrush limiting. Buy the option, not the part, as with the DNP RTS/CTS footprints. **Gate: scope module `VDD` pin 20 during a TX burst; record the number** | spike |
+| **D136** | **The module wants a series resistor on every digital interface pin, close to the module** (§2.4, which recommends them for digital-interface *and* reserved pins) — `UART1_TX`, `UART1_RX`, `MCLR`, `INTOUT` populated, plus the two DNP flow-control pins. **33 Ω footprints, 0 Ω acceptable**; the datasheet gives no value. Missing from item 20's parts list because it lives in the layout section, not the schematic one. Worth fitting: they are the only lever on edge rates once the board exists, and D128 may raise that link to 230 400 | settled |
 
 ---
 
@@ -476,7 +482,8 @@ Remaining Phase 0 loose end: nothing is committed to git yet (D16).
     Verified pad-by-pad against the in-tree ATDF, the HAL pinout header and datasheet §2.3.
 
 20. Schematic. **`hardware/PINOUT.md` is the pin- and net-level spec**; this is the parts list and
-    the things that are not pins.
+    the things that are not pins. **One flat sheet on 11 × 17 in (ANSI B / US Ledger), landscape**
+    — KiCad Page Settings → `B`, i.e. `(paper "B")` in the `.kicad_sch`. D131.
     - **PL10 SSOP-28** — `VDDIO2` tied to 3V3 alongside `VDD` (§3.2.3, D50); decoupling per
       §40; SWD header with a **1 kΩ pull-up on SWCLK** (Table 40-6, not optional) and a weak
       pull-up on SWDIO; RESET.
@@ -487,10 +494,14 @@ Remaining Phase 0 loose end: nothing is committed to git yet (D16).
       selects the UART1 host interface (§2.2 Table 2-2), but those are also the DFU pins, so
       hard-shorting them would permanently foreclose module firmware update. `UART2_TX` debug
       test point (TX only — there is no `UART2_RX`). `TP` (pin 24) is a 1.5 V PMU test point: do
-      not load. Pins 7/17/18 reserved, do not connect. Bulk capacitance at the module for TX peaks.
+      not load. Pins 7/17/18 reserved, do not connect. Bulk capacitance at the module for TX peaks
+      — **4.7 µF + 100 nF at `VDD`, and read D135 first: the total is capped near 10 µF, not free.**
       Footprints for `UART1_RTSn`/`UART1_CTSn`, **DNP**, against D128.
+      **Series resistors on every digital interface pin** (`UART1_TX`/`RX`, `MCLR`, `INTOUT`, plus
+      the two DNP ones), 33 Ω footprints, 0 Ω acceptable, placed close to the module — §2.4, D136.
     - **MCP2221A-I/ST** — `VUSB` **tied to the 3V3 rail**, not left to the internal LDO, which
-      cannot supply it when `VDD` is already 3.3 V (§1.6.2.1); local ceramic bypass on `VUSB`.
+      cannot supply it when `VDD` is already 3.3 V (§1.6.2.1); local bypass on `VUSB` of
+      **0.47 µF** — §1.6.2.2 specifies 0.22–0.47 µF, so 100 nF is under-spec (D135).
       `GP0`–`GP3` are NC or activity LEDs. **`USBCFG`/`SSPND` are deliberately not wired to the
       MCU (D116)** — do not re-add them.
     - **USB-C** — **power *and* data (D127, superseding D24's "no data")**: `VBUS` to the LDO,
@@ -501,15 +512,23 @@ Remaining Phase 0 loose end: nothing is committed to git yet (D16).
     - **MCP1826** 3V3 rail; **3 lamp channels**, low-side N-FETs off the 5 V rail, gate resistors,
       per-colour current-setting resistors (ADR-0009, D26); **button** with the internal pull-up
       (no external part).
-21. Stackup: signal / GND plane / PWR plane / signal. Module at board edge, ground-plane edges
-    aligned, antenna keepout, bulk capacitance at the module for TX peaks.
+21. ✅ **Stackup, placement and RF keepout** — [`hardware/STACKUP.md`](../hardware/STACKUP.md),
+    D132–D136, ADR-0024. `signal / GND / PWR / signal` with L2 solid and unbroken as the sole
+    reference plane; module at the top edge with the antenna overhanging a four-layer
+    5.3 × 15.73 mm keepout; every noise source at the base; ~40 × 85 mm ground plane on the
+    datasheet's own 45 %-vs-69 % efficiency measurement. **Bulk capacitance turned out to have a
+    ceiling** (D135) — three sourced limits cap total 3V3 capacitance near 10 µF, and whether that
+    survives a 311 mA TX burst is a measurement, not a calculation.
 22. ERC/DRC, 3D export to drive the enclosure model, BOM, fab outputs, order.
 
 ### Phase 4 — Enclosure (OpenSCAD)
 23. Parametric: 10 mm lens bores, lamp pitch, visor length, wall thickness, PCB outline and
     standoffs from the KiCad export, USB-C cable exit, press-fit translucent lens caps.
 24. RF constraints as `assert()`s: ≥10 mm plastic clearance at the antenna end, no metal
-    fasteners within 31.75 mm, magnets at the base only.
+    fasteners within 31.75 mm, magnets at the base only. **The antenna end is the top edge
+    (D134)**, so all of these are measured from there — and "magnets at the base only" *is* the
+    31.75 mm metal keepout, so the assert should derive it rather than restate a loose number.
+    Read D133's datasheet inconsistency before treating the 10 mm plastic figure as generous.
 25. Headless STL render via `Makefile`, print-settings notes.
 
 ### Phase 5 — Integration

@@ -7,6 +7,131 @@ Entries record what was done, why, and — importantly — what was tried and re
 
 ---
 
+## 2026-08-15 — The ground plane is the antenna, and "add bulk capacitance" was not available
+
+**Done** — plan item 21: [`hardware/STACKUP.md`](hardware/STACKUP.md), **ADR-0024**, D132–D136.
+Also D131, the schematic sheet size. `CONTEXT.md`'s **keepout** definition sharpened; two parts
+folded into item 20 that it was going to miss. No firmware touched, so no `ram_report` numbers.
+
+### The instruction that turned out to be impossible as written
+
+Item 21 said "bulk capacitance at the module for TX peaks", which reads as *add capacitance*. It is
+not available. Three limits, each from a different datasheet, pull against each other:
+
+| Limit | Value | Source |
+|---|---|---|
+| LDO output capacitance, max recommended | 22 µF | `MCP1826` §4.3 |
+| LDO input cap ≥ output cap, for step loads | `CIN` ≥ `COUT` | `MCP1826` §4.4 |
+| Effective capacitance across `VBUS` | ≤ 10 µF, else inrush limiting | `MCP2221A` §1.6.2.2 |
+
+`VBUS` *is* the LDO input and the 3V3 net *is* its output — a connection nothing in the tree had
+made — so the USB inrush ceiling and the `CIN ≥ COUT` guidance jointly cap **total 3V3 capacitance
+near 10 µF**, less than half what the LDO alone would allow. All three hold simultaneously only at
+10 µF / 10 µF. Fitted 4.7 µF at `VOUT` and 4.7 µF + 100 nF at the module, which also happens to be
+the LDO datasheet's own characterisation value (`COUT` = `CIN` = 4.7 µF X7R, §2.0), so its published
+transient curves actually describe this circuit.
+
+**Whether that is enough is not derivable and is not guessed.** The MCP1826 gives transient curves
+but no numeric ΔV spec, and the module's TX burst duration is unspecified. So the board is built for
+either answer: module bulk and `VBUS` bulk on **1206 pads** that take 22 µF, and a **0 Ω series
+footprint in `VBUS`** for inrush limiting if the bulk grows. Same tactic as the DNP RTS/CTS
+footprints — buy the option, not the part. D135 is a `spike`: scope module `VDD` pin 20 through a
+TX burst, rail must stay ≥ 3.0 V.
+
+### The ground plane is a specified part of the antenna
+
+`DS70005544C` Table 2-3 note 1 measures **the same antenna** at **45 % average efficiency on a
+57.2 × 25.4 mm board and 69 % on 85 × 40 mm** — about 1.9 dB for board size alone. That turns the
+outline into an RF parameter with a coefficient attached, so the board targets ~40 × 85 mm and the
+plane is explicitly not to be shrunk for panel area. A three-lamp column with 10 mm lenses arrives
+near that size anyway, so the better-measured geometry was free.
+
+The rest of the module's guidance is far more specific than "put it at the edge": a **5.3 mm ×
+15.73 mm no-copper region**, the **module *ground outline* edge** (not its body edge) coincident
+with the host ground-plane edge, **no board material** below the antenna preferred, **top layer
+under the module must be ground** with ≥ 10 mil stitching vias, no fan-out under the module, and
+**series resistors on every digital interface pin**. `CONTEXT.md`'s keepout definition had the
+10 mm/31.75 mm figures and the ground-edge alignment but was missing the geometry and the fact that
+the exclusion is **all four layers**. Sharpened rather than replaced.
+
+### Placement fell out of one rule
+
+Module at the **top edge**, antenna overhanging; every noise source — LDO, USB-C receptacle,
+full-speed bridge, and the three FETs whose edges are the broadband offender — at the **base**,
+per §2.5. The pleasing part: **this is why the magnets are at the base.** Phase 4's "magnets at the
+base only" (item 24) stops being a rule of thumb and becomes the 31.75 mm metal keepout expressed
+mechanically, ~70 mm as drawn. Item 24 now says to derive it rather than restate the number.
+
+**No swap class from ADR-0023 was spent.** The package pin order and the board's vertical zoning
+agree — lamp block at pins 22/23/24 faces the lamp column, module UART at 26–28/1 faces the top,
+console at 12/13 faces the bridge at the base. All of `PINOUT.md`'s documented freedoms survive
+into item 22.
+
+### Tried and rejected
+
+- **GND on both inner layers** (sig/GND/GND/sig) instead of D27's power plane. Genuinely tempting:
+  it deletes the split-plane return problem and maximises the ground §2.3 asks for. Rejected because
+  L3's only real cost — L4 return paths — is already removed by keeping every critical net on L1,
+  and two rails route comfortably on L3. **Recorded with a revisit condition**: if item 22 forces a
+  fast net onto L4, this comes back.
+- **Fitting 22 µF at the module now.** The LDO permits it and it directly serves the 311 mA burst.
+  Rejected as an unforced USB compliance break *before any measurement says it is needed*.
+- **Shrinking toward the 57.2 × 25.4 mm add-on-board size.** Rejected on the vendor's own 45 %
+  vs 69 % measurement — the wrong 1.9 dB to save a few cm² on a one-off board.
+- **Module at the base, near the LDO.** Shortens the one path carrying the 311 mA burst, which is a
+  real benefit. Rejected: it puts the antenna beside the receptacle, the bridge and the magnets.
+  Fixed with copper instead (≥ 0.8 mm on that run, per §2.5's own instruction).
+
+### Dead ends and source problems
+
+- **The RNWF02 Add-On Board schematic could not be read** — `WebFetch` on the onlinedocs PDF timed
+  out, and the schematics are published only as SVG/PDF images. That was the best available evidence
+  for bulk-cap values (a working reference design with this exact module), and losing it is why the
+  values come from the constraint envelope instead. **Retried once with the corrected GUID; timed
+  out again at 60 s.** Do not spend a third attempt through `WebFetch` — either download the
+  Add-On Board User's Guide PDF directly and read §5.1, or read the values off the physical
+  `EV72E72A` board, which is already on the shopping list and in hand.
+- **The MCP document search returns figure callouts as unstructured text.** Page 13 arrived as
+  `No Copper Region / 5.3 mm / Module PCB Edge / 15.73 mm / …` with no geometry. The 5.3 mm depth is
+  stated; **15.73 mm is an inference** (module body 14.73 mm + ~0.5 mm each side) and is flagged as
+  such in `STACKUP.md`. Same failure shape as the previous session's column-shredded §2.3 table.
+- **The package drawing retrieved is the U.FL variant's** — annotated "With Metal Shield and Coaxial
+  Connector", drawing C04-23567 Rev C, 14.73 × 21.72 × 2.1 mm. The body is the same module PCB, but
+  the `PC` variant's own land pattern must be confirmed when the footprint is drawn, not cross-read
+  from this.
+- **The datasheet contradicts itself on plastic clearance.** §2.3's bullets say 31.75 mm for *metal*
+  and 10 mm minimum for *plastic*; the Figure 2-8 caption says 31.75 mm "for all metallic and
+  plastic structures". The project follows the bullets (D45) — the specific statement over the
+  summary — which means the enclosure wall sits inside the figure's stricter reading. Performance
+  risk, not functional, and it gets settled by measuring with the enclosure on.
+
+### Also found
+
+- **`VUSB` wants 0.47 µF, not "a ceramic cap".** §1.6.2.2 specifies 0.22–0.47 µF; both `PINOUT.md`
+  and item 20 said only the vague thing, and 100 nF would have been under-spec.
+- **The MCU needs three decoupling caps, not one.** §40.3.1 requires one per supply *pin pair* —
+  pins 14/15 and 20/21 — plus `VDDIO2` at pin 6 (§40.3.1.3), even though D50 ties it to `VDD`. The
+  second pair is the easy one to drop. §40.3.1 also wants the caps **first in the power chain**,
+  which is a placement rule, not a schematic one.
+- **A USB compliance deviation, accepted deliberately.** A bus-powered device must suspend at
+  ≤ 500 µA; this one draws ~100 mA continuously and cannot suspend, since `SSPND` is unwired (D116)
+  so the MCU never learns the host slept. A light that goes dark when the host sleeps is
+  fail-*invisible*, which Rule 4 forbids. Documented in `STACKUP.md` as a deviation rather than
+  discovered as a bug later.
+
+### Open
+
+- **D135** — the measured droop. Assumption meanwhile: ~10 µF is adequate; footprints make the
+  other answer a value change.
+- **D128 is untouched and still the highest-value open thread** — the module's 230 400 default
+  against a firmware built for 115 200. Firmware work, and item 21 never depended on it.
+- Whether the enclosure can hold 10 mm of plastic clearance above the antenna. If not, the outline
+  reopens, not the stackup.
+
+**Next** — item 20, the schematic, on the 11 × 17 sheet D131 just fixed. Nothing blocks it.
+
+---
+
 ## 2026-08-15 — WAIT had never once fired, and the reason it can get stuck
 
 **Done** — hook wiring fixed in `.claude/settings.json` and `host/settings.hooks.json`. D123, D129,

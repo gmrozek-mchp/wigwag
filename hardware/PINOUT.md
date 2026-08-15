@@ -192,6 +192,11 @@ USB-C sink duties are unchanged: 5.1 kΩ CC pull-downs, and ≤ 10 µF effective
 Final placement may move any of these within its class without reopening ADR-0023. Anything not
 listed is fixed.
 
+**Placement is now settled ([`STACKUP.md`](STACKUP.md), ADR-0024) and spent none of them.** The
+package's pin order and the board's vertical zoning agree: the lamp block (pins 22/23/24) faces the
+lamp column, the module UART (pins 26–28, 1) faces the module at the top edge, and the console
+(pins 12/13) faces the bridge at the base. Every freedom below remains available to item 22.
+
 | Signal | May move to |
 |---|---|
 | lamp red `WO1` | `PA17` (pin 7) |
