@@ -194,6 +194,7 @@ static void at_service(bool at_ready)
 	while (true) {
 		static enum rnwf_at_state at_reported = RNWF_AT_ST_IDLE;
 		static enum link_condition link_reported = LINK_LINKED;
+		static bool announced_online;
 		uint32_t now;
 
 		if (at_ready) {
@@ -217,6 +218,30 @@ static void at_service(bool at_ready)
 				       at_client.timeouts, at_client.polls,
 				       rnwf_uart_overruns());
 			}
+		}
+
+		/*
+		 * The birth half of wigwag/online. AT+MQTTLWT already registered `0` as the will, so
+		 * the broker reports an unclean death on our behalf (CONTEXT.md, ADR-0003) — but a will
+		 * with no positive counterpart is useless: a subscriber cannot tell "never seen" from
+		 * "connected".
+		 *
+		 * Retained, so a subscriber arriving later sees the current truth rather than a stale
+		 * `0` from some previous death.
+		 *
+		 * Keyed on the AT client reaching READY, deliberately *not* on the link condition.
+		 * This topic means "connected to the broker", which stays true when the host daemon
+		 * dies; publishing 0 then would be the device reporting itself offline because
+		 * somebody else went away.
+		 */
+		if (at_ready && at_client.state == RNWF_AT_ST_READY && !announced_online) {
+			if (rnwf_at_publish(&at_client, module_cfg.online_topic, "1", true) == 0) {
+				printk("wigwag: online = 1\n");
+				announced_online = true;
+			}
+		} else if (at_client.state != RNWF_AT_ST_READY) {
+			/* Republish on the next connection; the will covers the gap. */
+			announced_online = false;
 		}
 
 		{

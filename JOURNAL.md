@@ -7,6 +7,49 @@ Entries record what was done, why, and — importantly — what was tried and re
 
 ---
 
+## 2026-08-14 — wigwag/online: the birth message, and the Last Will finally verified
+
+**Done** — `main.c` publishes `1` retained to `wigwag/online` once per connection, closing the last
+gap in `CONTEXT.md`'s topic table.
+
+**Why it needed to exist.** `AT+MQTTLWT` had registered `0` as the will since the AT client was
+written, so the broker would report an unclean death — but a will with no positive counterpart is
+useless. A subscriber could not distinguish "device never seen" from "device connected", because both
+look like an absent topic.
+
+**Keyed on AT `READY`, deliberately not on the link condition.** This topic means "connected to the
+broker", which stays true when the host daemon dies. Publishing `0` because *the host* went away would
+be the device misreporting itself. The two facts are separate and now have separate topics:
+`wigwag/online` is the device's own liveness, `wigwag/host_online` is the daemon's, and `link.c`
+combines them into whether the lamps can be trusted.
+
+Retained, so a late subscriber sees the current truth rather than a stale `0` from a previous death.
+
+**Verified on hardware, including the will**
+```
+wigwag/online stale-from-earlier   <- retained junk planted first, delivered on subscribe
+wigwag/online 1                    <- birth message
+wigwag/online 1                    <- second connection
+wigwag/online 0                    <- the will, after killing the module uncleanly
+```
+**This is the first verification that the Last Will actually fires**, which the AT client's own journal
+entry had listed as unverified. Two `1`s is correct rather than a bug: a backoff retry connected once
+the fake module started, then a reset reconnected, and the birth message fires once per connection —
+`announced_online` resets whenever the client leaves READY.
+
+**The caveat worth stating.** The will fired because the *fake* module held the MQTT session and was
+killed. That verifies the whole path — `AT+MQTTLWT` parsed, carried into the broker's CONNECT, and
+honoured on an unclean drop — but through our model of the module. Whether the real RNWF02 honours
+`AT+MQTTLWT` identically is still untested, and belongs with the `EV72E72A` bring-up.
+
+**Also open**: a *clean* `AT+MQTTDISCONN` would not fire the will, so a deliberate disconnect would
+need an explicit `0` first. Nothing disconnects deliberately today, and the code does not pretend to
+handle it.
+
+**Measured** — flash 21 472 B (34.9 %), RAM 4 480 B (54.7 %), unchanged.
+
+---
+
 ## 2026-08-14 — brightness, in two layers that deliberately do not share a mechanism
 
 Asked whether brightness should be one value or per bulb. The answer turned out to be both, at
