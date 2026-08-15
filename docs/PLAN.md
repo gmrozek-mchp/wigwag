@@ -240,11 +240,13 @@ FET selection: logic-level N-channel, Vgs(th) low enough to fully enhance at 3.3
 | **D109** | **`set` stages, `save` commits, `brightness` and `gain` also apply immediately.** Calibration is judged by eye, so it must be visible before it is stored; a half-typed network stays recoverable. Replies say `(not saved)` so the distinction is visible rather than remembered | settled |
 | **D110** | **Secrets are never printed back** — `show` reports `<set>`/`<unset>` for the Wi-Fi passphrase and broker password, and unknown keys default to secret so the failure direction is printing less | settled |
 | **D111** | **The wired path demands a *periodic* `host on`, within 10 s.** Over MQTT `wigwag/host_online` is retained once with `0` as the Last Will, so the broker holds the value and reports the death; a serial line has neither, and `USBCFG` cannot help because a machine whose daemon crashed still enumerates. Five missed beats at the daemon's existing 2 s tick, and the same 10 s budget as D34. The daemon sends it from its existing 2 s loop (`SerialPublisher`) | built |
-| **D112** | **USB outranks a healthy Wi-Fi link, and a quiet host goes fail-visible even while Wi-Fi is up.** Untrusted immediately on staleness, then a 5 s release window before handing back — switching straight to a possibly-staler retained MQTT state would trade a known unknown for an unknown one. An orderly `host off` or a deasserted `USBCFG` skips the window. Verified on hardware | built |
+| **D112** | *Superseded by D117.* USB outranks a healthy Wi-Fi link, untrusted immediately on staleness, then a 5 s release window before handing back | superseded |
 | **D113** | **No SSID configured means the AT client never starts.** Previously it reset, timed out and backed off forever against a network named `""`. That is the wired variant's normal state, and it is the concrete form of ADR-0018's "no credentials needed on the wired path" | built |
 | **D114** | **`pyserial` on every platform, lazily imported, as an optional extra** (`wigwagd[serial]`) rather than `termios` on POSIX and `pyserial` on Windows. A split backend would make Windows the *untested* path while development happens on macOS, and it saves nothing — Windows needs the dependency either way. Lazy import keeps D31's property that the test suite runs with nothing installed (ADR-0020) | built |
 | **D115** | **Serial port discovery is opt-in and refuses to guess.** `port = "auto"` matches the MCP2221A's factory USB identity, VID `0x04D8` / PID `0x00DD` (datasheet Registers 1-5 to 1-8); zero or several matches is an error. A daemon that silently picked the first of two serial ports would eventually drive somebody's 3D printer | built |
-| **D116** | **Reopens D103.** `USBCFG`/`SSPND` buy less than ADR-0018 claimed: the device is USB-powered (ADR-0009), so an unplugged cable is a power-off rather than an observable deassert, and a charger simply produces no bytes — so received bytes are both necessary *and* sufficient. `USBCFG` reduces to a boot-latency optimisation, and `SSPND` is not even GP0's factory default (that is `LED_URx`). Worth dropping the two pins unless a reason appears | open |
+| **D116** | **`USBCFG`/`SSPND` are not wired to the MCU; D103 is withdrawn.** The device is USB-powered (ADR-0009) so an unplugged cable is a power-off, not an observable deassert; suspend does not *unconfigure*, so only `SSPND` sees it, and `SSPND` needs per-unit chip-settings programming (`LED_URx` is GP0's default). Its one real use was accelerating a release window that D117 removes. Received bytes are necessary *and* sufficient. `GP0`/`GP1` still default to `LED_URx`/`LED_UTx`, so two LEDs remain free if a visible activity indicator is wanted | settled |
+| **D117** | **The USB claim latches until reset.** The two transports do not carry the same information — a daemon aggregates *its own machine's* sessions (D30) — so falling back to Wi-Fi would silently answer a different question rather than recover. Trust still tracks the heartbeat, so a quiet host means amber; the *choice* never reverts. Escaping needs a reset, and since the cable carries the power, unplugging is one. `host off` drops trust without releasing (ADR-0021) | built |
+| **D118** | **Module service stops entirely once USB latches** — resolves Q3. Both `rnwf_uart_poll()` and `rnwf_at_tick()`: draining without ticking would keep feeding MQTT states to the lamps, which is the substitution the latch prevents. Also ends the waste an end-to-end session measured at 947 AT timeouts. The module may stay associated; nothing reads it | built |
 
 ---
 
@@ -288,8 +290,10 @@ by code.
 | Lamps — TCC0 WO0/WO1/WO2 | 3 |
 | Button | 1 |
 | USB bridge UART — SERCOM1 PAD[0]/PAD[1] (D102) | 2 |
-| USB bridge status — `USBCFG` in, `SSPND` in (D103) | 2 |
-| **Used / available** | **~19 of 28** |
+| **Used / available** | **~17 of 28** |
+
+`USBCFG`/`SSPND` were budgeted here and are now withdrawn (D116): received bytes are necessary and
+sufficient, and the latch (D117) removed the release window they existed to accelerate.
 
 Still comfortable, with margin for the module's `UART2_TX` debug line and a board status LED.
 
@@ -507,8 +511,8 @@ Both resolved: the wire protocol is in `CONTEXT.md`, and the dependency question
 
 | # | Question | Where it stands |
 |---|---|---|
-| Q3 | Should the AT client keep retrying Wi-Fi while USB holds the device? | **Open.** Observed on hardware: 947 accumulated timeouts during one end-to-end session. Wasted power and UART traffic, not a correctness fault. Pausing it would slow recovery when USB goes away, so it needs a moment's thought rather than a quick patch |
-| Q4 | Drop `USBCFG`/`SSPND` from the pin plan? | **Open — D116.** Bytes turn out to be necessary and sufficient |
+| Q3 | Should the AT client keep retrying Wi-Fi while USB holds the device? | **Resolved 2026-08-15 — no, stopped entirely.** D118. The latch made it unambiguous: there is no fallback for the module to be kept warm for |
+| Q4 | Drop `USBCFG`/`SSPND` from the pin plan? | **Resolved 2026-08-15 — dropped.** D116, and the latch removed their last purpose |
 
 
 | # | Question | Assumption if unanswered |

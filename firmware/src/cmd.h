@@ -112,6 +112,22 @@ struct cmd {
  */
 bool cmd_parse(char *line, struct cmd *out);
 
+/**
+ * Does this command mean "a host is driving this device", as opposed to "a person is configuring it"?
+ *
+ * Only `host` and `state` qualify. That distinction matters more than it looks: the console and the
+ * transport share one wire (ADR-0018), so somebody configuring Wi-Fi over USB is typing on the same
+ * line a daemon would use. Treating every command as host activity made the wired transport claim the
+ * device mid-configuration, and then — ten seconds after the person stopped typing to read something —
+ * drop it and show the amber fail-visible pattern on a device whose Wi-Fi was perfectly healthy. That
+ * is Rule 4 firing when nothing is wrong, which is the one direction it must not fire.
+ *
+ * `set`, `show`, `save`, `clear`, `gain`, `brightness`, `echo`, `help` and `reboot` are all things a
+ * human does at a terminal. A daemon that wants the device sends `host on` every couple of seconds and
+ * `state` when the state changes, so nothing real is lost by ignoring the rest.
+ */
+bool cmd_is_host_activity(enum cmd_kind kind);
+
 /** True for keys whose value must never be printed back. See `show`. */
 bool cmd_key_is_secret(enum cmd_key key);
 

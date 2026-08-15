@@ -312,11 +312,13 @@ void console_poll(void)
 			bool ok = cmd_parse(line, &parsed);
 
 			/*
-			 * Any recognised command counts as the host being alive — it is demonstrably
-			 * talking to us, which is the whole test (D104). A rejected line does not count:
-			 * noise on the wire is not a host.
+			 * Only `host` and `state` count — see cmd_is_host_activity(). Every recognised
+			 * command used to, which meant a person configuring Wi-Fi over this very wire
+			 * claimed the transport and then lost it ten seconds later, flickering amber on a
+			 * device that was working fine. A rejected line never counts either: noise on a
+			 * wire is not a host.
 			 */
-			if (ok && parsed.kind != CMD_NONE && tport != NULL) {
+			if (ok && cmd_is_host_activity(parsed.kind) && tport != NULL) {
 				transport_note_host(tport, (uint32_t)k_uptime_get());
 			}
 

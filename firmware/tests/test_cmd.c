@@ -190,6 +190,28 @@ static void test_host_verb(void)
 	CHECK(!run("hostile", &c) && c.kind == CMD_UNKNOWN, "a longer verb is not host");
 }
 
+static void test_only_host_and_state_are_host_activity(void)
+{
+	/*
+	 * The distinction that stops a person configuring Wi-Fi from being mistaken for a daemon
+	 * driving the display — and from getting a spurious amber flicker ten seconds later.
+	 */
+	CHECK(cmd_is_host_activity(CMD_HOST), "host on is a host talking");
+	CHECK(cmd_is_host_activity(CMD_STATE), "state is a host driving the display");
+
+	CHECK(!cmd_is_host_activity(CMD_SET), "set is configuration, not a host");
+	CHECK(!cmd_is_host_activity(CMD_SHOW), "show is a person looking");
+	CHECK(!cmd_is_host_activity(CMD_SAVE), "save is configuration");
+	CHECK(!cmd_is_host_activity(CMD_CLEAR), "clear is configuration");
+	CHECK(!cmd_is_host_activity(CMD_GAIN), "gain is calibration by eye");
+	CHECK(!cmd_is_host_activity(CMD_BRIGHTNESS), "brightness is ambiguous, so it does not claim");
+	CHECK(!cmd_is_host_activity(CMD_ECHO), "echo is plumbing");
+	CHECK(!cmd_is_host_activity(CMD_HELP), "help is a person");
+	CHECK(!cmd_is_host_activity(CMD_REBOOT), "reboot is a person");
+	CHECK(!cmd_is_host_activity(CMD_NONE), "a blank line is nothing");
+	CHECK(!cmd_is_host_activity(CMD_UNKNOWN), "noise is not a host");
+}
+
 static void test_secrets_are_marked(void)
 {
 	/* `show` relies on this. Getting it wrong prints a Wi-Fi password to anyone with a cable. */
@@ -258,6 +280,7 @@ int main(void)
 	test_brightness_and_gain();
 	test_echo_verb();
 	test_host_verb();
+	test_only_host_and_state_are_host_activity();
 	test_secrets_are_marked();
 	test_key_names_round_trip();
 	test_long_lines_do_not_overrun();

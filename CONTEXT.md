@@ -85,7 +85,7 @@ is commands, so the two directions never need framing.
 |---|---|
 | `state IDLE\|BUSY\|WAIT\|ERROR` | what to display. Bare word, not JSON |
 | `host on` | **the daemon is alive. Must be repeated within 10 s** |
-| `host off` | orderly goodbye; the device releases the transport at once |
+| `host off` | orderly goodbye; the device stops trusting us at once, but stays on the wire |
 | `brightness 0`–`255` | as the retained topic |
 | `echo off` | stop echoing input, which a program does not want |
 
@@ -95,6 +95,12 @@ subscriber and announces the death on the daemon's behalf. A serial line has nei
 retains, and nothing notices a daemon that stops. `USBCFG` does not close the gap either, because a
 computer whose daemon has crashed still enumerates. So the wired path is the one place the device
 demands *periodic* evidence, on the same 10 s budget D34 sets for the broker.
+
+**The wire wins, and keeps winning.** Once a host has spoken, the device belongs to USB until it is
+reset — it will not fall back to Wi-Fi even after hours of silence (D117, ADR-0021). That is because the
+two transports do not carry the same information: a daemon reports *its own machine's* sessions, so
+falling back would answer a different question rather than recover. A quiet host therefore means amber,
+not another machine's state. Unplugging the cable is a reset, because the cable is also the power.
 
 The daemon sends this from its existing 2 s loop, so five beats fit inside the device's window
 (`SerialPublisher`, ADR-0020). Set `WIGWAG_SERIAL_PORT` — or `serial.port` in the config file — and the

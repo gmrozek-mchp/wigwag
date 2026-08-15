@@ -225,6 +225,21 @@ static void at_service(bool at_ready)
 		static bool announced_online;
 		uint32_t now;
 
+		/*
+		 * Stop servicing the module once USB has latched (D118). While latched the Wi-Fi path can
+		 * never be selected again this boot, so every reset, timeout and backoff it performs is
+		 * waste — an end-to-end session accumulated 947 timeouts proving exactly that.
+		 *
+		 * Deliberately stops *both* halves. Draining the UART without ticking would keep delivering
+		 * MQTT states to the lamps, which is precisely the substitution the latch exists to prevent:
+		 * the display must follow the transport that owns it. The module may well stay associated
+		 * and connected; nothing reads it any more, and that is the point.
+		 */
+		if (at_ready && transport_usb_holds(&tport)) {
+			printk("wigwag: usb has the device, module service stopped\n");
+			at_ready = false;
+		}
+
 		if (at_ready) {
 			now = (uint32_t)k_uptime_get();
 			rnwf_uart_poll(&at_client);

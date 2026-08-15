@@ -1,7 +1,10 @@
 # ADR-0018 — An MCP2221A USB-serial bridge, and one transport at a time chosen from hardware evidence
 
-- **Status:** Accepted
+- **Status:** Accepted, in part superseded
 - **Date:** 2026-08-14
+- **Superseded by ADR-0021**, for the transport-*selection* mechanics (the soft hold and release
+  window) and for the `USBCFG`/`SSPND` pin decision. Fitting the `MCP2221A` and carrying the console
+  over it stand unchanged.
 
 ## Context
 

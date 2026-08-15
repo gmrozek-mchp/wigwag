@@ -46,6 +46,11 @@ static const struct key_name *key_lookup(const char *name)
 	return NULL;
 }
 
+bool cmd_is_host_activity(enum cmd_kind kind)
+{
+	return kind == CMD_HOST || kind == CMD_STATE;
+}
+
 bool cmd_key_is_secret(enum cmd_key key)
 {
 	size_t i;

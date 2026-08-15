@@ -1,10 +1,10 @@
 /*
  * Host unit tests for transport selection.
  *
- * The handover rules are exactly the kind of thing that looks obvious and is not: what happens when a
- * host goes quiet while Wi-Fi is healthy, whether an unplugged cable recovers faster than a timeout,
- * and whether the device ever ends up *trusting* two sources or none. Getting those wrong on a desk
- * would look like a flickering lamp and be miserable to reason about, so they are asserted here.
+ * The rule under test is the latch (D117): once a host has spoken over the wire, this device is its
+ * until reset, because the two transports do not carry the same information. What still moves is
+ * *trust* — a quiet host means amber, not a stale lamp. Getting either half wrong would look like a
+ * flickering lamp or, worse, a confident lamp about the wrong machine's work.
  *
  *   make -C firmware/tests transport
  *
@@ -87,28 +87,13 @@ static void test_usb_claims_with_no_usbcfg_pin(void)
 	 * USBCFG pin exists, so received bytes are the only evidence — and they must suffice.
 	 */
 	transport_init(&t, true);
-	CHECK(t.usb_cfg == TRANSPORT_USB_UNKNOWN, "no pin by default");
 	transport_note_host(&t, 500);
 	transport_tick(&t, 500);
 	CHECK(transport_active(&t) == TRANSPORT_USB && transport_is_trusted(&t),
 	      "usb claims on bytes alone");
 }
 
-static void test_bytes_beat_a_contradicting_pin(void)
-{
-	/*
-	 * If the pin says no host but commands are arriving, believe the commands. A wrong pin should
-	 * not be able to veto evidence that something is demonstrably talking to us.
-	 */
-	transport_init(&t, true);
-	transport_note_usb_cfg(&t, TRANSPORT_USB_ABSENT, 0);
-	transport_note_host(&t, 100);
-	transport_tick(&t, 100);
-	CHECK(transport_active(&t) == TRANSPORT_USB && transport_is_trusted(&t),
-	      "received bytes outrank the pin");
-}
-
-static void test_quiet_host_goes_untrusted_before_it_hands_over(void)
+static void test_quiet_host_loses_trust_but_keeps_the_device(void)
 {
 	transport_init(&t, true);
 	transport_note_wifi(&t, true, 0);
@@ -120,27 +105,55 @@ static void test_quiet_host_goes_untrusted_before_it_hands_over(void)
 	transport_tick(&t, 1000 + TRANSPORT_HOST_TTL_MS);
 	CHECK(transport_is_trusted(&t), "still trusted at the TTL boundary");
 
-	/* One millisecond past: untrusted at once, but USB still holds the device. */
+	/* One millisecond past: amber, immediately. */
 	transport_tick(&t, 1000 + TRANSPORT_HOST_TTL_MS + 1U);
 	CHECK(!transport_is_trusted(&t), "untrusted the moment the host is stale");
-	CHECK(transport_active(&t) == TRANSPORT_USB, "usb still holds during the release window");
 	CHECK(t.reason == TRANSPORT_REASON_HOST_QUIET, "reason says the host went quiet");
 
 	/*
-	 * This is the important one. Wi-Fi is *healthy* the whole time, and the device still refuses
-	 * to show its state during the window — trading a known unknown for a possibly-staler source
-	 * is not an improvement.
+	 * The heart of it. Wi-Fi is healthy the entire time and the device **never** switches to it,
+	 * no matter how long the host stays silent, because Wi-Fi would be reporting a different
+	 * machine's work rather than recovering this one's.
 	 */
-	transport_tick(&t, 1000 + TRANSPORT_HOST_TTL_MS + TRANSPORT_RELEASE_MS);
-	CHECK(!transport_is_trusted(&t), "still fail-visible with wifi up and waiting");
+	transport_tick(&t, 1000 + 60000U);
+	CHECK(transport_active(&t) == TRANSPORT_USB, "still on usb after a minute of silence");
+	CHECK(!transport_is_trusted(&t), "and still honestly untrusted");
 
-	/* Past the window, hand over to Wi-Fi and trust it. */
-	transport_tick(&t, 1000 + TRANSPORT_HOST_TTL_MS + TRANSPORT_RELEASE_MS + 2U);
-	CHECK(transport_active(&t) == TRANSPORT_WIFI, "handed over to wifi");
+	/* And no churn while it sits there: the count must not move at all. */
+	{
+		uint32_t before = t.handovers;
+		uint32_t now;
+
+		for (now = 1000 + 60000U; now < 1000 + 3600000U; now += 5000U) {
+			transport_tick(&t, now);
+		}
+
+		CHECK(transport_active(&t) == TRANSPORT_USB, "still on usb after an hour");
+		CHECK(!transport_is_trusted(&t), "still untrusted");
+		CHECK(t.handovers == before, "no churn across an hour of silence (%u -> %u)", before,
+		      t.handovers);
+	}
+}
+
+static void test_only_a_reset_clears_the_latch(void)
+{
+	/*
+	 * transport_init() is what a reset does. Escaping the latch in the field means power-cycling,
+	 * and since the cable carries the power, unplugging it is exactly that (ADR-0009).
+	 */
+	transport_init(&t, true);
+	transport_note_host(&t, 1000);
+	transport_tick(&t, 1000);
+	CHECK(transport_active(&t) == TRANSPORT_USB, "latched");
+
+	transport_init(&t, true);
+	transport_note_wifi(&t, true, 0);
+	transport_tick(&t, 0);
+	CHECK(transport_active(&t) == TRANSPORT_WIFI, "a reset returns to wifi");
 	CHECK(transport_is_trusted(&t), "and trusts it");
 }
 
-static void test_host_returning_reclaims_immediately(void)
+static void test_host_returning_regains_trust(void)
 {
 	transport_init(&t, true);
 	transport_note_host(&t, 1000);
@@ -151,10 +164,11 @@ static void test_host_returning_reclaims_immediately(void)
 	transport_note_host(&t, 20500);
 	transport_tick(&t, 20500);
 	CHECK(transport_active(&t) == TRANSPORT_USB && transport_is_trusted(&t),
-	      "one word from the host restores it");
+	      "one word from the host restores trust");
+	CHECK(t.handovers == 1, "and it was never a handover, just trust returning (%u)", t.handovers);
 }
 
-static void test_goodbye_releases_at_once(void)
+static void test_goodbye_drops_trust_without_releasing(void)
 {
 	transport_init(&t, true);
 	transport_note_wifi(&t, true, 0);
@@ -162,20 +176,18 @@ static void test_goodbye_releases_at_once(void)
 	transport_tick(&t, 1000);
 	CHECK(transport_is_trusted(&t), "trusted");
 
-	/* An orderly goodbye is not a fault, so there is nothing to wait out. */
+	/*
+	 * An orderly goodbye is faster than the timeout, but it is not a release: "I am going away"
+	 * says nothing about whether the Wi-Fi source reports the same machine (D117).
+	 */
 	transport_note_host_bye(&t, 2000);
 	transport_tick(&t, 2000);
-	CHECK(transport_active(&t) == TRANSPORT_WIFI, "released to wifi without waiting");
-	CHECK(transport_is_trusted(&t), "and wifi is trusted");
+	CHECK(!transport_is_trusted(&t), "untrusted at once, not after 10 s");
+	CHECK(t.reason == TRANSPORT_REASON_HOST_BYE, "reason distinguishes a goodbye from silence");
+	CHECK(transport_active(&t) == TRANSPORT_USB, "still latched to usb");
 
-	/* With no Wi-Fi to fall back to, a goodbye leaves the device honestly on nothing. */
-	transport_init(&t, false);
-	transport_note_host(&t, 1000);
-	transport_tick(&t, 1000);
-	transport_note_host_bye(&t, 2000);
-	transport_tick(&t, 2000);
-	CHECK(transport_active(&t) == TRANSPORT_NONE && !transport_is_trusted(&t),
-	      "nothing left to believe");
+	transport_tick(&t, 100000);
+	CHECK(transport_active(&t) == TRANSPORT_USB, "and stays latched indefinitely");
 }
 
 static void test_talking_again_cancels_a_goodbye(void)
@@ -189,24 +201,7 @@ static void test_talking_again_cancels_a_goodbye(void)
 	transport_note_host(&t, 2500);
 	transport_tick(&t, 2500);
 	CHECK(transport_is_trusted(&t), "newer evidence wins over an older goodbye");
-}
-
-static void test_unplugging_skips_the_release_window(void)
-{
-	transport_init(&t, true);
-	transport_note_wifi(&t, true, 0);
-	transport_note_host(&t, 1000);
-	transport_tick(&t, 1000);
-
-	/* Cable out. Unambiguous, so there is no reason to wait out a timer. */
-	transport_note_usb_cfg(&t, TRANSPORT_USB_ABSENT, 1100);
-	transport_tick(&t, 1100);
-	CHECK(transport_is_trusted(&t), "a fresh host still wins while it is fresh");
-
-	transport_tick(&t, 1000 + TRANSPORT_HOST_TTL_MS + 1U);
-	CHECK(transport_active(&t) == TRANSPORT_WIFI, "unplugged releases without the window");
-	CHECK(t.reason == TRANSPORT_REASON_OK || t.reason == TRANSPORT_REASON_WIFI_DOWN,
-	      "reason belongs to the new transport");
+	CHECK(t.reason == TRANSPORT_REASON_OK, "and the reason follows");
 }
 
 static void test_wifi_losing_trust_does_not_hand_over(void)
@@ -271,12 +266,11 @@ int main(void)
 	test_nothing_configured_is_honest();
 	test_a_talking_host_claims_the_device();
 	test_usb_claims_with_no_usbcfg_pin();
-	test_bytes_beat_a_contradicting_pin();
-	test_quiet_host_goes_untrusted_before_it_hands_over();
-	test_host_returning_reclaims_immediately();
-	test_goodbye_releases_at_once();
+	test_quiet_host_loses_trust_but_keeps_the_device();
+	test_only_a_reset_clears_the_latch();
+	test_host_returning_regains_trust();
+	test_goodbye_drops_trust_without_releasing();
 	test_talking_again_cancels_a_goodbye();
-	test_unplugging_skips_the_release_window();
 	test_wifi_losing_trust_does_not_hand_over();
 	test_never_trusted_without_evidence();
 	test_clock_wrap();

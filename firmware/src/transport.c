@@ -37,15 +37,13 @@ void transport_note_host(struct transport *t, uint32_t now_ms)
 
 void transport_note_host_bye(struct transport *t, uint32_t now_ms)
 {
+	/*
+	 * Note this does not clear host_seen. The latch survives a goodbye on purpose (D117): a daemon
+	 * announcing its departure tells us nothing about whether the Wi-Fi source reports the same
+	 * machine's work, so releasing would be the silent substitution this design exists to avoid.
+	 */
 	t->host_bye = true;
 	t->host_last_ms = now_ms;
-}
-
-void transport_note_usb_cfg(struct transport *t, enum transport_usb_cfg cfg, uint32_t now_ms)
-{
-	(void)now_ms;
-
-	t->usb_cfg = cfg;
 }
 
 void transport_note_wifi(struct transport *t, bool trusted, uint32_t now_ms)
@@ -85,59 +83,27 @@ void transport_tick(struct transport *t, uint32_t now_ms)
 {
 	enum transport_kind was = t->active;
 
-	if (host_fresh(t, now_ms)) {
-		/*
-		 * A host is talking. That claims the device outright, even if USBCFG says otherwise:
-		 * received bytes are stronger evidence of a live host than a pin, and on a board with no
-		 * such pin they are the only evidence there is.
-		 */
+	/*
+	 * The latch. Once a host has spoken over the wire this device is its, for the rest of the boot,
+	 * whether or not it is still talking — see transport.h for why falling back to Wi-Fi would be
+	 * answering a different question rather than recovering.
+	 *
+	 * Trust still comes and goes with the heartbeat, so a quiet host means amber rather than a stale
+	 * lamp. What does not come back is the *choice*: escaping needs a reset, and unplugging the cable
+	 * is one, because the cable is also the power.
+	 */
+	if (t->host_seen) {
 		t->active = TRANSPORT_USB;
-		t->trusted = true;
-		t->reason = TRANSPORT_REASON_OK;
-		t->usb_claimed_ms = now_ms;
+		t->trusted = host_fresh(t, now_ms);
+
+		if (t->trusted) {
+			t->reason = TRANSPORT_REASON_OK;
+		} else {
+			t->reason = t->host_bye ? TRANSPORT_REASON_HOST_BYE
+						: TRANSPORT_REASON_HOST_QUIET;
+		}
 
 		if (was != TRANSPORT_USB) {
-			t->handovers++;
-		}
-		return;
-	}
-
-	if (t->active == TRANSPORT_USB) {
-		bool unplugged = (t->usb_cfg == TRANSPORT_USB_ABSENT);
-		bool released = (uint32_t)(now_ms - t->usb_claimed_ms) > TRANSPORT_RELEASE_MS;
-
-		/*
-		 * USB held the device and the host has gone quiet. Untrusted immediately — that is Rule 4,
-		 * and the lamps must say "I do not know" rather than hold the last thing they were told.
-		 *
-		 * But keep *holding* the transport for a short window rather than switching straight to
-		 * Wi-Fi, whose retained state could be older still. Handing over to a second possibly-stale
-		 * source the instant the first hiccups would trade a known unknown for an unknown one.
-		 *
-		 * An unplugged cable skips the window: USBCFG deasserting is unambiguous, and waiting out
-		 * the release timer would just delay a recovery we already know is needed.
-		 */
-		t->trusted = false;
-
-		if (t->host_bye) {
-			t->reason = TRANSPORT_REASON_HOST_BYE;
-		} else if (unplugged) {
-			t->reason = TRANSPORT_REASON_UNPLUGGED;
-		} else {
-			t->reason = TRANSPORT_REASON_HOST_QUIET;
-		}
-
-		/*
-		 * A goodbye is not a fault, so it releases at once too: the host told us it was going, and
-		 * lingering on a transport we have been told is finished is pointless.
-		 */
-		if (!unplugged && !released && !t->host_bye) {
-			return;
-		}
-
-		select_wifi(t, now_ms);
-
-		if (t->active != was) {
 			t->handovers++;
 		}
 		return;
@@ -172,8 +138,6 @@ const char *transport_reason_str(enum transport_reason reason)
 		return "host quiet";
 	case TRANSPORT_REASON_HOST_BYE:
 		return "host said goodbye";
-	case TRANSPORT_REASON_UNPLUGGED:
-		return "usb unplugged";
 	case TRANSPORT_REASON_WIFI_DOWN:
 		return "wifi down";
 	case TRANSPORT_REASON_NOTHING:

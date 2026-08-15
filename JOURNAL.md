@@ -7,6 +7,88 @@ Entries record what was done, why, and — importantly — what was tried and re
 
 ---
 
+## 2026-08-15 — the USB claim latches, because the two transports are not the same question
+
+**Done** — **ADR-0021**, superseding ADR-0018's selection mechanics and its pin decision. D117, D118;
+D112 superseded; Q3 and Q4 resolved. Firmware got *smaller*.
+
+### The argument that changed my mind
+
+I had built transport selection as a soft hold: a quiet USB host went untrusted after 10 s, then after
+5 s more the device handed back to Wi-Fi. Challenged on it, with an argument I had not weighed properly:
+**we do not know that the Wi-Fi daemon carries the same information as the USB one.**
+
+That is right, and it reframes the whole thing. A daemon aggregates the sessions of *its own machine*
+(D30). So falling back is not restoring the display — it is silently changing the subject, from "what is
+my laptop doing" to "what is some other machine doing", with nothing on a three-lamp device to mark the
+swap. Confidently displaying the wrong thing is precisely what ADR-0007 forbids. Amber, meaning "I do
+not know what your laptop is doing", is the *more* honest answer even though it is less useful.
+
+I had been treating the transports as interchangeable carriers of one truth. They are two different
+questions that happen to use the same vocabulary.
+
+### Why latching is cheap here, which I nearly missed
+
+The obvious objection to a latch is "a transient claim traps the device". It cannot, because **this
+device is USB-powered** (ADR-0009): pulling the cable is a power cycle. The natural physical gesture
+already clears the latch, so there is no recovery procedure to teach. A `reboot` command or a watchdog
+reset clears it too, being per-boot state.
+
+It also removes the crash-loop ping-pong I had flagged against the soft hold: a daemon restarting every
+few seconds could previously bounce the device between two sources every 15 s.
+
+### `USBCFG` died as a corollary
+
+Examining it honestly, it could not do the jobs ADR-0018 gave it. It cannot see an unplugged cable —
+that is a power-off. It cannot see a sleeping host, because suspend does not *unconfigure* a device;
+only `SSPND` sees that, and `SSPND` is not GP0's factory default (`LED_URx` is), so it would need
+per-unit chip-settings programming. Its one real use was accelerating the release window — and the latch
+deletes the release window.
+
+So D103 is withdrawn and the pin budget drops from ~19 to ~17 of 28. `GP0`/`GP1` still default to
+`LED_URx`/`LED_UTx`, so two LEDs remain available if a visible activity indicator is ever wanted — which
+is more use to a human than a status bit only the firmware could read.
+
+### And Q3 answered itself
+
+With no possible fallback, retrying Wi-Fi while latched is unambiguous waste — an end-to-end session
+measured 947 accumulated AT timeouts doing exactly that. Module service now stops entirely, **both**
+halves: draining the UART without ticking would keep delivering MQTT states to the lamps, which is the
+very substitution the latch exists to prevent. The display must follow the transport that owns it.
+
+### Also fixed, from a question rather than a bug report
+
+Asking about the TTL surfaced that *any* recognised command counted as a host heartbeat. So a person
+configuring Wi-Fi over the console claimed the transport, and ten seconds after they paused to read
+something the device flickered amber on a perfectly healthy Wi-Fi link — Rule 4 firing when nothing is
+wrong, which is the one direction it must not fire. Only `host` and `state` count now
+(`cmd_is_host_activity()`), and configuration commands are explicitly not host activity.
+
+### Verified on hardware
+
+```
+ 3.1  wigwag: at RESETTING ...                        <- wifi churning
+ 3.1  wigwag: transport wifi untrusted (wifi down)
+ 4.4  wigwag: transport usb TRUSTED (ok)
+ 4.4  wigwag: usb has the device, module service stopped
+25.4  wigwag: transport usb untrusted (host quiet)
+      ... 30+ s of silence, no fallback, no churn ...
+37.3  show -> settings printed, and no transport line at all
+```
+
+That last line is two confirmations in one: `show` neither claimed the transport nor re-established
+trust.
+
+**Measured** — flash **33 212 B (54.06 %)**, RAM **5 248 B (64.06 %)**. Both went *down* from 33 220 /
+5 256 despite gaining the module-stop logic, because the release window, `usb_claimed_ms` and the
+`usb_cfg` input all disappeared. Simpler and smaller.
+
+**Tests** — 8 392 firmware checks, 110 host tests. The transport suite was rewritten around the latch:
+the load-bearing assertion is now that a healthy Wi-Fi link is *never* switched to, across an hour of
+simulated silence, with the handover count unchanged.
+
+---
+
 ## 2026-08-15 — the daemon learns to speak over a wire, and USBCFG loses its justification
 
 **Done** — `SerialPublisher` behind the `Publisher` protocol the daemon already had, so a device wired
