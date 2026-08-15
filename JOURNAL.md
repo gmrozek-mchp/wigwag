@@ -7,6 +7,76 @@ Entries record what was done, why, and — importantly — what was tried and re
 
 ---
 
+## 2026-08-14 — an MCP2221A, one transport at a time, and a pin map that does not transfer
+
+**Decided** — ADR-0018, D101–D104. No code; the deliverable is a PCB-affecting decision recorded
+before layout, plus one finding that would have bitten Phase 3.
+
+### The thing I nearly missed
+
+Checking whether SERCOM1 was even reachable on the target package turned up something bigger than the
+question I was asking. The product is `PIC32CM6408PL10028`; we develop on the 48-pin cnano. **`PB00`–
+`PB03` do not exist on the 28-pin package.** So the dev board's third lamp (`PB02` = TCC0 WO2) and its
+console pins (`PB00`/`PB01` = SERCOM1) do not transfer at all.
+
+Nothing is broken — the 28-pin part offers WO0/WO1/WO2 on `PA00/01/02`, `PA08/09/10`, or
+`PA24/PA25/PA18`, and SERCOM1 on `PA00`+`PA01` or `PA10`+`PA11` — but **D49's "safe to commit to the
+PCB" was true about the peripheral and not about the pins.** The overlay has always been explicit that
+its *polarity* is cnano-specific (D72); it was silent about pin *availability*, which is the more
+dangerous kind of dev-board assumption because it looks like a working design.
+
+Recorded as D101, with the verified options in the pin budget so Phase 3 starts from facts.
+
+### The decision
+
+Fit an `MCP2221A` (TSSOP-14, 9 888 in stock, AEC-Q100) on the USB-C connector ADR-0009 already puts on
+the board for power, with D+/D− currently unconnected. So the delta is one chip, two caps and two
+pins — it integrates its own oscillator and USB termination resistors, and enumerates with class
+drivers on all three OSes.
+
+**It carries the console into the product, and costs no firmware to do it.** Not a new capability —
+the cnano's on-board debugger already gives us a CDC console, and the whole firmware has been built
+assuming one. The point is that it would silently *disappear* on a board with no debugger attached,
+leaving SWD as the only route to `RESET BY WATCHDOG`, `NOT FEEDING, lamp task stale`, `link UNLINKED
+(module silent)` and the D74 PWM flags. Preserving it is a devicetree and pinmux assignment, nothing
+more. Rule 4 tells the device not to lie; it says nothing about being able to *explain* itself, and on
+hardware whose only output is three lamps that gap turns out to matter nearly as much.
+
+### Changing my own recommendation on the role
+
+I first proposed peer transports with USB taking precedence. I talked myself out of it while thinking
+about `link.c`, and the reason is a hardware detail I had under-weighted: **a charger does not
+enumerate.** `USBCFG` therefore distinguishes "plugged into a computer" from "plugged into a wall
+wart", which makes transport selection a *reading* rather than a heuristic:
+
+- `USBCFG` asserted and a host heartbeat arrives → USB, and skip Wi-Fi bring-up entirely, credentials
+  included
+- asserted but no heartbeat → fall back to Wi-Fi if configured, else fail-visible
+- deasserted → Wi-Fi/MQTT as today
+
+Peers would have meant two concurrent trust evaluations, a precedence rule, and a fail-visible
+condition reasoning about both — with the rarely-exercised combinations being exactly where the bug
+lives. **That is the shape of D75**, in a system that was simpler at the time. Redundancy buys a status
+light very little and ADR-0007's promise is the thing most worth protecting, so: one transport at a
+time, one image, and the fully-wired variant is "don't populate the RNWF02".
+
+### Costs accepted knowingly
+
+- **10 mA typ / 12 mA max, always on** — nothing to a 1 A LDO, but it roughly doubles quiescent draw.
+- **PL10's last SERCOM, so no I²C on the product ever.** An ambient-light sensor for auto-brightness,
+  the one plausible future want, can be analogue on an ADC pin.
+- **`VUSB` must be tied to 3V3 alongside `VDD`** (§1.6.2.1) — the internal transceiver LDO cannot
+  supply 3.3 V when `VDD` already is. Gets you marginal signalling rather than an obvious failure.
+- **No DTR/RTS on the MCP2221A**, so the MCU cannot see the host *open* the port. `USBCFG` proves a
+  host exists, not that anything is listening — liveness stays application-level, same shape as
+  `wigwag/host_online`.
+
+Pin budget goes to ~19 of 28. Still open and not blocking the PCB: the USB wire protocol, and whether
+a daemon serial backend justifies `pyserial` on Windows (`termios` is stdlib elsewhere; ADR-0010 makes
+the host cross-platform, so that needs its own ADR).
+
+---
+
 ## 2026-08-14 — a flash driver for PL10, and the enable command that is itself a command
 
 **Done** — `firmware/modules/pic32cm-pl-nvmctrl/`: read/write/erase for PL10's NVMCTRL as a proper

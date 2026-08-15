@@ -229,6 +229,10 @@ FET selection: logic-level N-channel, Vgs(th) low enough to fully enhance at 3.3
 | **D98** | **Measured flash timing: page erase 10.1 ms, word write ~0.13 ms** at 24 MHz. Erase and write stall the CPU including interrupts (§26.4.2.3.1), so a single `erase()` call is capped at ~**49 pages (~24 KB)** by ADR-0016's 500 ms watchdog budget. The 4 KB storage partition is 8 pages / 81 ms. `FLMPER` would cut that ~8x and is deferred, gated on reading `BOOTPROT` | settled |
 | **D99** | **Issuing an *enable* command (`FLWR`/`FLPER`) is itself a command that clears `INTFLAG.READY`** — storing to the array before it lands sets `STATUS.PROGE` and silently does nothing. Measured `INTFLAG=0` right after writing `FLPER`. The first driver failed every erase this way while writes worked by accident of a `memcpy` in the gap | settled |
 | **D100** | **A bootloader, if built, is a developer convenience and bare-metal** — a stripped-down Adafruit-derived SAM-BA monitor targeting Zephyr's in-tree `bossac` runner, not MCUboot and not a Zephyr app. UF2 itself is impossible: PL10 has no USB peripheral, and the MCP2221A cannot lend one. `__VTOR_PRESENT = 1`, so a relocated app is viable (`docs/usb-serial-and-bootloader.md`) | spike |
+| **D101** | **The 28-pin target package does not have the cnano's pins.** `PB02` (lamp WO2) and `PB00`/`PB01` (console) do not exist on `PIC32CM6408PL10028` at all. Everything still fits — TCC0 WO0/WO1/WO2 on `PA00/01/02`, `PA08/09/10`, or `PA24/PA25/PA18`; SERCOM1 on `PA00/PA01` (mux D) or `PA10/PA11` (mux C) — but D49's specific mapping is cnano-only and the Phase 3 pin assignment must be redone against the 28-pin pinout | settled |
+| **D102** | **Fit an `MCP2221A` USB-serial bridge** on the existing USB-C connector's D+/D-, `SERCOM1`, `VUSB` tied to 3V3 alongside `VDD`. Spends PL10's last SERCOM, so the product will never have I2C. Populated on the first build; **the console comes free** — a devicetree assignment, no firmware (ADR-0018) | settled |
+| **D103** | **`GP2` = `USBCFG`, `GP0` = `SSPND`, wired to MCU inputs** — hardware evidence that a live USB host is attached and that it has not suspended. Not decoration: they are what makes transport selection a reading rather than a guess, since a charger does not enumerate | settled |
+| **D104** | **One transport at a time, selected at boot from `USBCFG` plus a host heartbeat.** USB wins when a live host is present, else Wi-Fi/MQTT as today; no credentials needed on the wired path. Both transports live at once was rejected — two concurrent trust evaluations and a fail-visible rule spanning both is the complexity shape that produced D75 (ADR-0018) | settled |
 
 ---
 
@@ -271,10 +275,27 @@ by code.
 | Module control — MCLR out, INTOUT in | 2 |
 | Lamps — TCC0 WO0/WO1/WO2 | 3 |
 | Button | 1 |
-| **Used / available** | **~15 of 28** |
+| USB bridge UART — SERCOM1 PAD[0]/PAD[1] (D102) | 2 |
+| USB bridge status — `USBCFG` in, `SSPND` in (D103) | 2 |
+| **Used / available** | **~19 of 28** |
 
-Comfortable margin for optional UART flow control, the module's `UART2_TX` debug line, and a
-board status LED. Exact pin assignment is a Phase 3 task against datasheet §2.3.
+Still comfortable, with margin for the module's `UART2_TX` debug line and a board status LED.
+
+**The 28-pin package is not the cnano (D101).** `PB00`–`PB03` do not exist on
+`PIC32CM6408PL10028`, so neither the dev board's lamp pin (`PB02` = TCC0 WO2) nor its console pins
+(`PB00`/`PB01` = SERCOM1) transfer. Verified options on the 28-pin part, from
+`hal_microchip/.../pio/pic32cm6408pl10028.h`:
+
+| Function | 28-pin options |
+|---|---|
+| Lamps, TCC0 WO0/WO1/WO2 (mux F) | `PA00`/`PA01`/`PA02`, or `PA08`/`PA09`/`PA10`, or `PA24`/`PA25`/`PA18` |
+| USB bridge, SERCOM1 PAD0/PAD1 | `PA00`+`PA01` (mux D), or `PA10`+`PA11` (mux C) |
+| Module, SERCOM0 PAD0/PAD1 | `PA04`+`PA05` (mux C), as D76 |
+
+Note the overlap: `PA00`–`PA02` and `PA08`–`PA11` serve both the lamps and SERCOM1, so the two
+cannot both take the same block. One workable split is lamps on `PA24`/`PA25`/`PA18` with the
+bridge on `PA00`/`PA01`. Exact assignment is a Phase 3 task against datasheet §2.3, and `PA20`
+(SWDIO), `PA31` (SWCLK) and `PA30` (RESET) are reserved.
 
 ---
 
@@ -435,6 +456,8 @@ Remaining Phase 0 loose end: nothing is committed to git yet (D16).
 | `PIC32CM6408PL10028-I/SP` | same die, **SPDIP-28 through-hole** for socketed bring-up | 285 |
 | `RNWF02PC-I/100` | Wi-Fi module, PCB antenna, Trust&Go | 432 |
 | `MCP1826S-3302E/DB` | 1 A LDO, SOT-223 | — |
+| **`MCP2221A-I/ST`** | USB-serial bridge, TSSOP-14 — no crystal, no termination resistors, CDC class driver on all three OSes (D102, ADR-0018) | 9888 |
+| `MCP2221A-I/P` | same die, PDIP-14, for breadboard bring-up before layout | 2640 |
 | **`EV10P22A`** | PL10 Curiosity Nano (identical 64 K/8 K SoC) | — |
 | **`EV72E72A`** | RNWF02 Add-on Board | 268 |
 | — | 3× 10 mm diffused LEDs (R/Y/G), 3× SOT-23 N-FET, resistors, tactile switch, USB-C receptacle | — |
@@ -465,8 +488,12 @@ numbers, stock and design traps are in [`usb-serial-and-bootloader.md`](usb-seri
 
 | # | Question | Where it stands |
 |---|---|---|
-| Q1 | **Add an `MCP2221A` USB-serial bridge?** ADR-0009 already puts a USB-C connector on the board for power with D+/D- unconnected, so the delta is one TSSOP-14 (9 888 in stock), two caps and two pins. It would also give the product PCB a console it currently lacks entirely, plus `USBCFG`/`SSPND` as hardware evidence of a live host. Costs 10 mA always-on and PL10's last SERCOM | Scope undecided: footprint-only insurance vs. a fully designed transport |
-| Q2 | **If built, is USB a peer to MQTT, a Wi-Fi-free variant, or diagnostics only?** Materially changes `link.c` and `CONTEXT.md`. A USB-only variant would drop the RNWF02, credentials and broker entirely — arguably the majority use case for a light beside the machine running Claude Code | Undecided |
+| Q1 | Add an `MCP2221A` USB-serial bridge? | **Resolved 2026-08-14 — yes, fitted and populated.** D102/D103, ADR-0018 |
+| Q2 | Is USB a peer to MQTT, a variant, or diagnostics only? | **Resolved 2026-08-14 — one transport at a time, chosen from `USBCFG`.** D104, ADR-0018 |
+
+Still open on that thread: the wire protocol for the USB path, and whether the daemon's serial
+backend justifies a `pyserial` dependency on Windows (`termios` suffices on macOS and Linux, and
+ADR-0010 makes the host cross-platform). Neither blocks the PCB.
 
 
 | # | Question | Assumption if unanswered |

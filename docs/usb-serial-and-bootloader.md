@@ -1,14 +1,16 @@
 # USB-serial (MCP2221A) and a serial bootloader — findings
 
-Two related hardware ideas, investigated 2026-08-14, **neither committed yet**. This file exists so
-the analysis does not have to be redone: every number below was read from a datasheet, the Zephyr
-source tree, or measured on a PL10 Curiosity Nano, on that date.
+Two related hardware ideas, investigated 2026-08-14. This file exists so the analysis does not have
+to be redone: every number below was read from a datasheet, the Zephyr source tree, or measured on a
+PL10 Curiosity Nano, on that date.
 
 The two ideas have very different verdicts, so they are kept separate here.
 
-- **USB-serial via MCP2221A** — viable, cheap, and it closes a real hole. Awaiting a scope decision.
+- **USB-serial via MCP2221A** — **decided and committed the same day: fitted, populated, console over
+  it, one transport at a time chosen from `USBCFG`.** See **ADR-0018**, D101–D104. The material below
+  is the supporting analysis.
 - **UF2 bootloader** — impossible on this silicon. The *serial* half of the same Adafruit bootloader
-  is viable; see below for what it actually needs.
+  is viable; direction agreed (developer convenience, bare metal) but not scheduled.
 
 ---
 
@@ -62,14 +64,37 @@ microchipDIRECT on 2026-08-14:
 - **A wired variant could drop the RNWF02 entirely** — no Wi-Fi credentials, no broker, no MQTT. For
   a light sitting next to the machine running Claude Code, that may be the majority case.
 
-### Open decisions
+### Decided (2026-08-14) — ADR-0018
 
-1. **Scope** — footprint + pins committed in Phase 3 with firmware later, versus designing the wired
-   transport now, versus recording only.
-2. **Transport role** — peer to MQTT with USB taking precedence, a separate USB-only variant, or
-   diagnostics/console only. This one materially changes `link.c` and `CONTEXT.md`.
+1. **Scope: fitted and populated on the first build.** Footprint, `SERCOM1` pins and the
+   `USBCFG`/`SSPND` inputs all go into the Phase 3 layout (D102, D103). Cheap now partly because the
+   28-pin pin map has to be reworked regardless — see the pin note below.
+2. **Role: one transport at a time**, selected at boot from `USBCFG` plus a host heartbeat (D104).
+   Both live simultaneously was rejected: two concurrent trust evaluations plus a fail-visible rule
+   spanning both is the complexity shape that produced D75.
 
-Not yet decided; both were being discussed when the bootloader question took priority.
+The console comes free — it is a devicetree and pinmux assignment, so existing `printk` output reaches
+a CDC port with no firmware written. That is the part to build first.
+
+**Still open, neither blocking the PCB:** the wire protocol for the USB path, and whether the daemon's
+serial backend justifies a `pyserial` dependency on Windows (`termios` is stdlib on macOS and Linux,
+and ADR-0010 makes the host cross-platform, so this needs its own ADR).
+
+### The 28-pin pin trap
+
+The product target is `PIC32CM6408PL10028`; development is on the 48-pin `…PL10048` cnano. **`PB00`–
+`PB03` do not exist on the 28-pin package**, so neither the dev board's third lamp (`PB02` = TCC0
+WO2) nor its console pins (`PB00`/`PB01` = SERCOM1) transfer. Verified options on the 28-pin part
+(`hal_microchip/.../pio/pic32cm6408pl10028.h`):
+
+| Function | 28-pin options |
+|---|---|
+| Lamps, TCC0 WO0/WO1/WO2 (mux F) | `PA00`/`PA01`/`PA02`, `PA08`/`PA09`/`PA10`, or `PA24`/`PA25`/`PA18` |
+| Bridge UART, SERCOM1 PAD0/PAD1 | `PA00`+`PA01` (mux D), or `PA10`+`PA11` (mux C) |
+
+Those two overlap, so they cannot take the same block; lamps on `PA24`/`PA25`/`PA18` with the bridge
+on `PA00`/`PA01` is one clean split. `PA20` (SWDIO), `PA31` (SWCLK) and `PA30` (RESET) are reserved.
+Recorded as D101.
 
 ---
 
