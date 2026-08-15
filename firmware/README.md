@@ -19,7 +19,9 @@ firmware/
 │                                         Zephyr adapter (lamp/lamp_pwm, button/button_gpio,
 │                                         wdog/wdog_wdt) so the logic is host-testable
 ├── tests/                                host unit tests, plain clang: `make -C firmware/tests`
-└── boards/pic32cm_pl10_cnano.overlay     TCC0 PWM (D49), SERCOM0, WDT, RSTC, lamps, SW0
+├── modules/pic32cm-pl-nvmctrl/           out-of-tree flash driver for PL10's NVMCTRL (ADR-0017);
+│                                         registered via ZEPHYR_EXTRA_MODULES in CMakeLists.txt
+└── boards/pic32cm_pl10_cnano.overlay     TCC0 PWM (D49), SERCOM0, WDT, RSTC, NVMCTRL, lamps, SW0
 ```
 
 The west workspace top directory is the **repository root**, so `zephyr/`, `modules/`, `.west/`
@@ -199,6 +201,24 @@ refuse to feed and reboot every ~18 s. **Remove it afterwards.**
 
 `CONFIG_HWINFO` is deliberately off: its Microchip driver misreads this part's `RCAUSE`, so
 `wdog_wdt.c` reads the register directly (D95, and bug 4 in `docs/upstreaming-to-zephyr.md`).
+
+## Flash
+
+`firmware/modules/pic32cm-pl-nvmctrl/` provides self-programming, because mainline has no flash driver
+for this family and its two Microchip drivers target other peripheral revisions (ADR-0017). Two things
+to know before using it:
+
+- **Erase stalls the CPU, interrupts included** — 10.1 ms per 512-byte page, measured. That is fine
+  against the watchdog's 500 ms (ADR-0016), but it caps a single `flash_erase()` call at about **49
+  pages (~24 KB)**. Erase more than that in one call and the device reboots mid-erase.
+- **`FIXED_PARTITION_DEVICE()` does not work on this family** — PL10 declares `flash0` directly under
+  `/soc`, so partition-to-device resolution finds `/soc`. Use the device explicitly with the
+  offset from devicetree:
+
+```c
+const struct device *fl = DEVICE_DT_GET(DT_NODELABEL(nvmctrl));
+off_t off = PARTITION_OFFSET(storage_partition);   /* 0xf000, 4 KB, 8 pages */
+```
 
 ## Moving the Zephyr pin
 

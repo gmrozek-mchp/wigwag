@@ -7,6 +7,107 @@ Entries record what was done, why, and — importantly — what was tried and re
 
 ---
 
+## 2026-08-14 — a flash driver for PL10, and the enable command that is itself a command
+
+**Done** — `firmware/modules/pic32cm-pl-nvmctrl/`: read/write/erase for PL10's NVMCTRL as a proper
+out-of-tree Zephyr module, verified on silicon. **ADR-0017**, D96–D99. Also two hardware questions
+investigated and written up without being decided (`docs/usb-serial-and-bootloader.md`, Q1/Q2).
+
+### Why a flash driver, when the ask was about a bootloader
+
+The session started with "add an MCP2221A, and maybe a UF2 bootloader". Following that honestly ended
+somewhere else. UF2 needs the MCU to *be* a USB device and PL10 has no USB peripheral — no `usb.h` in
+the pack at all — and an MCP2221A cannot lend one, being a USB device in its own right with a fixed
+CDC+HID personality.
+
+**I was then correctly pulled up for collapsing "the Adafruit bootloader" into UF2.** `uf2-samdx1` is
+a composite device: UF2 mass storage *and* a CDC port speaking BOSSA/SAM-BA. The serial half needs no
+native USB, and Zephyr already ships `bossac` as an in-tree runner — with the MCP2221A supplying the
+CDC port, the host would see exactly what an Arduino Zero presents. `__VTOR_PRESENT = 1` on this M0+,
+which was the biggest silent risk, since ARMv6-M makes VTOR optional and without it a relocated
+application is a non-starter.
+
+The second correction mattered more: **the bootloader would be bare metal, not Zephyr**, so it does
+not need a Zephyr flash driver — only the NVMCTRL sequence. Which reframed the driver as the
+*shared-learning* first step rather than a prerequisite: get the programming sequence right once with
+a test framework around it, then lift the core. It also happens to unblock two things already on the
+list — credentials out of the image (D37/D56) and brightness that survives a reboot — and it is the
+highest-value upstream contribution available, since nobody has PL flash support.
+
+### The bug worth remembering
+
+**Issuing an *enable* command is itself a command.** `FLWR` and `FLPER` do not merely set a mode; they
+clear `INTFLAG.READY` while the controller digests them, and a store to the array before that
+completes sets `STATUS.PROGE` and silently does nothing.
+
+My first driver stored on the very next instruction. Every erase failed with `-EIO`; every write
+*succeeded*. The difference was a `memcpy` sitting between the command and the store in the write
+path, supplying just enough delay by accident. A sequence that works by luck of instruction
+scheduling is worse than one that fails outright, so the wait now lives inside `issue_cmd()` where a
+call site cannot forget it.
+
+Diagnosing it needed a register dump rather than more reading, and the dump was unambiguous:
+```
+diag: LOCK=0000ffff PARAM=07060080 STATUS=00000000 INTFLAG=00000001 CTRLB=00000000
+diag A: after cmd  INTFLAG=00000000 ...   <- READY cleared by writing FLPER
+diag A: after store INTFLAG=00000000 STATUS=00000000 ADDR=0000f000
+diag A: settled    STATUS=00000000  page[0]=ff   <- worked!
+```
+Sequence A *succeeded* in the diagnostic while the identical driver sequence failed — because I had
+put a `printk` between the command and the store. The instrument's own overhead was the fix. Worth
+remembering as a debugging hazard in its own right: a probe that changes timing can validate a
+sequence the shipping code cannot execute.
+
+`diag B` failed for a *different* instance of the same rule — it issued `FLPER` immediately after
+`NOCMD`, while `NOCMD` was still executing. Both are §26.6.1: "STATUS.PROGE is also set if a
+previously written command has not yet completed."
+
+### Measured, and it constrains the watchdog
+
+| | |
+|---|---|
+| page erase (512 B) | **10.1 ms** |
+| word write (4 B) | ~0.13 ms |
+| 8 pages one at a time | 80.6 ms — near-exactly 8x, so `FLMPER8` would do it in ~10 ms |
+
+Erase and write **stall the CPU including interrupts** (§26.4.2.3.1: reads during an operation "result
+in a bus wait"). That is good news for an 8 KB part — no RAM-resident routine needed — and it means
+the driver never actually spins: the hardware stalls it at the next instruction fetch, so the timeout
+in `wait_ready()` is pure insurance.
+
+The consequence is a real ceiling: **a single `erase()` call must stay under ~49 pages (~24 KB)** or
+yesterday's watchdog reboots the device mid-erase (ADR-0016's 500 ms). The storage partition is 8
+pages / 81 ms, a sixth of the budget, so nothing today is close — but the number is now in the driver
+and the register rather than waiting to be discovered.
+
+### Dead ends and things that surprised me
+
+- **`FIXED_PARTITION_DEVICE()` cannot work on this family at all.** `DT_MTD_FROM_FIXED_PARTITION()`
+  walks *upward* to the memory node's parent, and PL10 declares `flash0` directly under `/soc`, so it
+  resolves to `/soc` — not a device. Every other platform makes `soc-nv-flash` a *child* of its
+  controller. An overlay cannot reparent a node, so our controller sits as a sibling and consumers
+  pass the device explicitly. Filed as upstream bug 5; the reparenting is a safe no-op change since no
+  in-tree driver binds PL flash today.
+- **Third strike for `-g1` naming.** `microchip,nvmctrl-g1-flash` names module `U2409` and drives a
+  page buffer with `PBC`/`EB`; PL10 has no page buffer and neither command. After RSTC yesterday and
+  the TCC bit width in D68, I now treat any `-g1` driver as unverified for this family until proven.
+- **Module, not patch.** ADR-0006 allows patching the pinned tree, but the existing PWM patch already
+  taught us `west update` reverts patches silently. A module survives it and upstreams as a file move.
+- **`PARTITION_OFFSET`/`PARTITION_SIZE`, not `FIXED_PARTITION_*`** — the latter are `__DEPRECATED_MACRO`
+  in this tree. Caught by a build warning, not by me.
+- **`ADDR` is flash-relative**, reading `0x0000f000` for an absolute `0x0C00f000` store, and it
+  auto-updates from array stores. Relevant later for `LR`/`UR`/`FLMPER`.
+- Flash is mapped at **`0x0C000000`**, not zero — worth knowing before computing a bootloader's app
+  base.
+
+**Measured** — flash 24 080 B (39.19 %), RAM 4 568 B (55.76 %). The driver costs **748 B flash and
+40 B RAM** (its mutex and cached geometry).
+
+**Host tests** — 7 730 checks, 0 failures, unchanged: the driver's correctness is hardware-verified
+rather than host-tested, since it is all register sequencing.
+
+---
+
 ## 2026-08-14 — the watchdog, and why feeding it from the AT loop would have been worthless
 
 **Done** — `wdog.c` (pure liveness accounting) + `wdog_wdt.c` (the WDT and the reset-cause report),

@@ -1,0 +1,33 @@
+# Copyright (c) 2026 wigwag
+# SPDX-License-Identifier: Apache-2.0
+
+title: Microchip PIC32CM PL NVMCTRL flash controller
+
+description: |
+  Non-Volatile Memory Controller on PIC32CM PL, providing self-programming of the program flash.
+
+  Distinct from "microchip,nvmctrl-g1-flash" (module U2409) and "microchip,nvmctrl-g3". The PL
+  revision has no page buffer: writes go 32 bits at a time directly into the array with CTRLB.CMD
+  set to FLWR, and erases use FLPER (plus FLMPER2..32 for multiples). Datasheet section 26.4.2.3.
+
+  Named after the family rather than a peripheral group because this pack carries no ATDF module
+  id to name it after, and because the family already sets that precedent upstream:
+  "microchip,pic32cm-pl-clock" in dts/arm/microchip/pic32c/pic32cm_pl/common/pic32cm_pl.dtsi.
+
+  Geometry is read from PARAM at runtime (NVMP pages of 8 << PSZ bytes) rather than encoded here,
+  so one binding covers the 64 KB 6408PL and the 128 KB 1216PL without a devicetree change.
+
+  UPSTREAM NOTE: the correct in-tree shape makes the "soc-nv-flash" node a *child* of this
+  controller, as every other Zephyr flash controller does, so that
+  DT_MTD_FROM_FIXED_PARTITION() resolves partitions to this device. PIC32CM PL currently
+  declares flash0 directly under /soc, which no overlay can reparent. Until that is fixed
+  upstream, this node sits as a sibling and consumers pass the device explicitly alongside
+  FIXED_PARTITION_OFFSET(). See docs/upstreaming-to-zephyr.md.
+
+compatible: "microchip,pic32cm-pl-nvmctrl"
+
+include: flash-controller.yaml
+
+properties:
+  reg:
+    required: true

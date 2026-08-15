@@ -2,6 +2,11 @@
 
 cmake_minimum_required(VERSION 3.20.0)
 
+# Out-of-tree flash driver for PL10's NVMCTRL. A module rather than a patch to the pinned tree:
+# `west update` reverts patches silently (firmware/patches/README.md), and this shape is what the
+# upstream PR will be. Must come before find_package(Zephyr).
+list(APPEND ZEPHYR_EXTRA_MODULES ${CMAKE_CURRENT_SOURCE_DIR}/modules/pic32cm-pl-nvmctrl)
+
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(wigwag)
 

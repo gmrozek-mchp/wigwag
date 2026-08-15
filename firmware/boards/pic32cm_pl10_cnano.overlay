@@ -61,6 +61,28 @@
 			status = "disabled";
 		};
 
+		/*
+		 * NVMCTRL — the seventh PL10 devicetree node this project has added, and the first
+		 * needing a driver written from scratch rather than enabled: the in-tree
+		 * microchip,nvmctrl-g1-flash targets module U2409, whose page-buffer command set this
+		 * revision does not have (firmware/modules/pic32cm-pl-nvmctrl).
+		 *
+		 * Base 0x41004000 from hal_microchip's pic32cm6408pl10048.h, cross-checked against the
+		 * datasheet's own programming sequence, which cites NVMCTRL_CTRLB at 0x4100_4004
+		 * (§6.5.7.1.7) — base + 4, since offset 0 is reserved on this revision.
+		 *
+		 * A sibling of flash0 rather than its parent, which is the shape every other Zephyr
+		 * flash controller uses. PL10 declares flash0 directly under /soc and devicetree cannot
+		 * reparent an existing node, so partition-to-device resolution stays broken until that
+		 * is fixed upstream. Consumers pass this device explicitly with
+		 * FIXED_PARTITION_OFFSET(); see docs/upstreaming-to-zephyr.md.
+		 */
+		nvmctrl: nvmctrl@41004000 {
+			compatible = "microchip,pic32cm-pl-nvmctrl";
+			reg = <0x41004000 0x30>;
+			status = "okay";
+		};
+
 		tcc0: tcc@42001800 {
 			compatible = "microchip,tcc-g1-pwm";
 			reg = <0x42001800 0x80>;

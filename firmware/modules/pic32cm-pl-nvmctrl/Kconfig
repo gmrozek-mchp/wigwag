@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: Apache-2.0
+
+config FLASH_PIC32CM_PL
+	bool "Microchip PIC32CM PL flash driver (NVMCTRL)"
+	default y
+	depends on FLASH
+	depends on DT_HAS_MICROCHIP_PIC32CM_PL_NVMCTRL_ENABLED
+	select FLASH_HAS_DRIVER_ENABLED
+	select FLASH_HAS_PAGE_LAYOUT
+	select FLASH_HAS_EXPLICIT_ERASE
+	help
+	  Self-programming support for the NVMCTRL found on PIC32CM PL.
+
+	  This is NOT the peripheral that drivers/flash/flash_mchp_nvmctrl_g1.c drives. That one is
+	  module U2409, which writes through a page buffer and uses the PBC and EB commands. The PL
+	  revision has neither: it writes 32-bit words straight into the array under FLWR, and
+	  erases with FLPER. Enabling the g1 driver here would not merely be wrong, it would issue
+	  reserved commands.

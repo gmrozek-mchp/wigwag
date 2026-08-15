@@ -224,6 +224,11 @@ FET selection: logic-level N-channel, Vgs(th) low enough to fully enhance at 3.3
 | **D93** | **Watchdog feeding is earned, not automatic** — both the AT loop and the render thread must check in with `wdog.c` within 500 ms or the device stops feeding and reboots ~2 s later. A watchdog fed from one loop certifies half the system and silently vouches for the other half (ADR-0016). Demonstrated on hardware with a deliberately wedged render thread | settled |
 | **D94** | **Detection budget: 500 ms staleness + 2 s hardware window = ~2.5 s**, inside D34's 10 s. Normal mode, no closed window — a minimum window catches a task running too fast, which is not a failure this device has, and would let the feed itself reset a healthy device | settled |
 | **D95** | **`CONFIG_HWINFO` is not used; the firmware reads `RSTC.RCAUSE` itself** and leaves the `rstc` node disabled. `hwinfo_mchp_g1.c` reads PL10's RCAUSE at offset 0 with JH's bit positions — it returns 0 for every reset, and would call a watchdog reset `RESET_PIN` at the right address. Upstream bug 4; verified `rcause 0x10` on a real watchdog reboot | settled |
+| **D96** | **PL10 flash support is our own driver, as an out-of-tree Zephyr module** at `firmware/modules/pic32cm-pl-nvmctrl/` — not a tree patch (`west update` reverts those silently) and not app-local (it belongs to the SoC). Mainline's two Microchip flash drivers target other peripheral revisions; the g1 one would issue commands PL10 does not define (ADR-0017) | built |
+| **D97** | **Compatible `microchip,pic32cm-pl-nvmctrl`, family-named**, following the family's own upstream precedent `microchip,pic32cm-pl-clock`. Geometry read from `PARAM` at runtime (`NVMP` pages of `8 << PSZ`) and cross-checked against devicetree, so one binding covers 6408PL and 1216PL and a wrong `reg` fails loudly | built |
+| **D98** | **Measured flash timing: page erase 10.1 ms, word write ~0.13 ms** at 24 MHz. Erase and write stall the CPU including interrupts (§26.4.2.3.1), so a single `erase()` call is capped at ~**49 pages (~24 KB)** by ADR-0016's 500 ms watchdog budget. The 4 KB storage partition is 8 pages / 81 ms. `FLMPER` would cut that ~8x and is deferred, gated on reading `BOOTPROT` | settled |
+| **D99** | **Issuing an *enable* command (`FLWR`/`FLPER`) is itself a command that clears `INTFLAG.READY`** — storing to the array before it lands sets `STATUS.PROGE` and silently does nothing. Measured `INTFLAG=0` right after writing `FLPER`. The first driver failed every erase this way while writes worked by accident of a `memcpy` in the gap | settled |
+| **D100** | **A bootloader, if built, is a developer convenience and bare-metal** — a stripped-down Adafruit-derived SAM-BA monitor targeting Zephyr's in-tree `bossac` runner, not MCUboot and not a Zephyr app. UF2 itself is impossible: PL10 has no USB peripheral, and the MCP2221A cannot lend one. `__VTOR_PRESENT = 1`, so a relocated app is viable (`docs/usb-serial-and-bootloader.md`) | spike |
 
 ---
 
@@ -454,6 +459,15 @@ Debuggers already on hand (PICkit 5, PICkit Basic, Atmel-ICE, J-Link) all work v
 - **Enclosure:** `make` renders STLs; `assert()`s fail loudly on RF clearance violations.
 
 ## Open questions
+
+Two hardware questions opened on 2026-08-14 and deliberately left open; the full analysis, part
+numbers, stock and design traps are in [`usb-serial-and-bootloader.md`](usb-serial-and-bootloader.md).
+
+| # | Question | Where it stands |
+|---|---|---|
+| Q1 | **Add an `MCP2221A` USB-serial bridge?** ADR-0009 already puts a USB-C connector on the board for power with D+/D- unconnected, so the delta is one TSSOP-14 (9 888 in stock), two caps and two pins. It would also give the product PCB a console it currently lacks entirely, plus `USBCFG`/`SSPND` as hardware evidence of a live host. Costs 10 mA always-on and PL10's last SERCOM | Scope undecided: footprint-only insurance vs. a fully designed transport |
+| Q2 | **If built, is USB a peer to MQTT, a Wi-Fi-free variant, or diagnostics only?** Materially changes `link.c` and `CONTEXT.md`. A USB-only variant would drop the RNWF02, credentials and broker entirely — arguably the majority use case for a light beside the machine running Claude Code | Undecided |
+
 
 | # | Question | Assumption if unanswered |
 |---|---|---|

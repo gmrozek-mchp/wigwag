@@ -1,6 +1,6 @@
 # Upstreaming to Zephyr mainline
 
-Four mainline issues were found during Phase 2 (see `JOURNAL.md`, 2026-08-14). Each is worked around
+Five mainline issues were found during Phase 2 (see `JOURNAL.md`, 2026-08-14). Each is worked around
 locally — in `firmware/patches/` or in the board overlay — and each should go upstream, per ADR-0006's
 ladder: fix it locally, then contribute it, rather than living on a fork.
 
@@ -25,6 +25,7 @@ Tree state when the bugs were found: mainline pinned at
 | 2 | `pic32cm_pl10_cnano` declares LED0 `GPIO_ACTIVE_HIGH`; hardware is active low | — | — | not submitted |
 | 3 | `pic32cm_pl10_cnano` enables `XOSC32K` (crystal disconnected by default), silently taking PA24 **and PA25** | — | — | not submitted |
 | 4 | `hwinfo_mchp_g1.c` reads PIC32CM PL's `RCAUSE` at the wrong offset with JH's bit positions | — | — | not submitted |
+| 5 | PIC32CM PL declares `flash0` directly under `/soc`, so `FIXED_PARTITION_DEVICE()` cannot resolve for the whole family | — | — | not submitted |
 
 Searched upstream on 2026-08-14: **no existing issue or PR covers any of them.** Possibly adjacent, open:
 [#107066](https://github.com/zephyrproject-rtos/zephyr/issues/107066) "Unexpected DT binding
@@ -460,12 +461,112 @@ This one is **not** carried in `firmware/patches/`: wigwag reads `RCAUSE` itself
 answers wrongly. When the fix lands, enable that node, set `CONFIG_HWINFO=y`, and replace the direct
 read with `hwinfo_get_reset_cause()`.
 
+---
+
+## Bug 5 — `flash0` has no controller parent, so partitions cannot resolve to a device
+
+### Evidence
+
+`dts/arm/microchip/pic32c/pic32cm_pl/common/pic32cm_6408_pl.dtsi` declares the flash as a direct
+child of `/soc`:
+
+```
+soc {
+	flash0: flash@c000000 {
+		reg = <0x0c000000 DT_SIZE_K(64)>;
+		ranges = <0x0 0x0c000000 DT_SIZE_K(64)>;
+	};
+```
+
+Every other Zephyr platform makes the `soc-nv-flash` node a **child of its flash controller** —
+`st,stm32-flash-controller`, `atmel,sam0-nvmctrl`, `microchip,nvmctrl-g1-flash` and so on — because
+`DT_MTD_FROM_FIXED_PARTITION()` walks *upward* from the partition:
+
+```c
+#define DT_MTD_FROM_FIXED_PARTITION(node_id)                                  	COND_CODE_1(DT_NODE_EXISTS(DT_MEM_FROM_FIXED_PARTITION(node_id)),      		    (DT_PARENT(DT_MEM_FROM_FIXED_PARTITION(node_id))),         		    (DT_GPARENT(node_id)))
+```
+
+With `flash0` under `/soc`, that resolves to `/soc` — not a device. So `FIXED_PARTITION_DEVICE()` and
+everything built on it cannot work on this family, even though `pic32cm_pl10_cnano.dts` defines a
+`slot0_partition` and a `storage_partition` and sets `zephyr,code-partition`. The partitions look
+complete and are unusable for their main purpose.
+
+`PARTITION_OFFSET()` and `PARTITION_SIZE()` are unaffected, being pure devicetree arithmetic, so the
+workaround is for consumers to pass the flash device explicitly. That is what wigwag does (ADR-0017).
+
+### How it was found (useful in the issue)
+
+Writing a flash driver for the family (there is none — see the contribution note below) and finding
+there was no correct way to hand NVS a device for `storage_partition`. An overlay cannot fix it:
+devicetree has no way to reparent an existing node.
+
+### Suggested fix
+
+Introduce the controller node in `pic32cm_pl.dtsi` and move `flash0` inside it, matching the shape
+used by `samd5xe5x.dtsi`:
+
+```
+nvmctrl: nvmctrl@41004000 {
+	compatible = "microchip,pic32cm-pl-nvmctrl";
+	reg = <0x41004000 0x30>;
+	#address-cells = <1>;
+	#size-cells = <1>;
+	ranges = <0x0 0x0c000000 DT_SIZE_K(64)>;
+	status = "disabled";
+
+	flash0: flash@c000000 { ... };
+};
+```
+
+This is a devicetree-structure change with no behavioural effect on existing users — nothing in tree
+binds a PL flash controller today, precisely because there is no driver — so it is safe to land ahead
+of the driver.
+
+### Commit message
+
+```
+dts: microchip: pic32cm_pl: put flash0 under a controller node
+
+The soc-nv-flash node was a direct child of /soc, so
+DT_MTD_FROM_FIXED_PARTITION() resolved to /soc rather than to a flash
+device, and FIXED_PARTITION_DEVICE() could not be used for any
+partition on this family -- including the slot0 and storage
+partitions that pic32cm_pl10_cnano.dts already defines.
+
+Add the NVMCTRL controller node and move flash0 inside it, matching
+every other platform's structure.  No functional change for existing
+users: no in-tree driver binds a PIC32CM PL flash controller yet.
+
+Fixes #NNNN
+
+Signed-off-by: Your Name <you@example.com>
+```
+
+---
+
+## Contribution — a flash driver for PIC32CM PL
+
+Not a bug: mainline has no flash driver for this family at all, and the two Microchip drivers it does
+have target different peripheral revisions. `microchip,nvmctrl-g1-flash` names module `U2409` in its
+own binding and drives it through a page buffer using the `PBC` and `EB` commands; PL10's NVMCTRL has
+no page buffer and neither command.
+
+`firmware/modules/pic32cm-pl-nvmctrl/` is deliberately shaped as an upstreamable module — driver,
+binding and Kconfig in in-tree layout — so submitting it is a file move plus the devicetree change in
+bug 5 above. It is written from the datasheet's own sequence (§26.4.2.3.4), verified on a
+`pic32cm_pl10_cnano`, and documents the trap that a naive implementation falls into: issuing an
+*enable* command such as `FLWR` or `FLPER` is itself a command that clears `INTFLAG.READY`, and
+storing to the array before it completes sets `STATUS.PROGE` while silently doing nothing.
+
+Send it after bug 5, and after the PL10 devicetree node additions below, since it depends on both.
+
 ## Missing PL10 devicetree nodes — a contribution, not a bug
 
-Separately from the four bugs, this project has now had to create **six** devicetree nodes that PL10
+Separately from the five bugs, this project has now had to create **seven** devicetree nodes that PL10
 lacks entirely, in each case with the driver and binding already in mainline and sibling families
 already instantiating them: `tcc0`, `sercom0`'s UART configuration, its two `gclkperiph` channels,
-`wdt`, and `rstc`. These are additive SoC-level enablement rather than fixes, and belong in
+`wdt`, `rstc`, and `nvmctrl` — the last of which needed a driver written as well, since no in-tree
+driver matches this peripheral revision. These are additive SoC-level enablement rather than fixes, and belong in
 `dts/arm/microchip/pic32c/pic32cm_pl/common/pic32cm_pl.dtsi` with `status = "disabled"`, following
 the JH dtsi's shape. `firmware/boards/pic32cm_pl10_cnano.overlay` holds all of them, with every
 address, IRQ number and limit cited to its source — that overlay is the raw material for the PR.

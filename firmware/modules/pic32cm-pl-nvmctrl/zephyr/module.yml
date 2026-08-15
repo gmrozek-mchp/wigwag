@@ -1,0 +1,14 @@
+# Out-of-tree Zephyr module: flash (NVMCTRL) support for Microchip PIC32CM PL.
+#
+# Shaped as a module rather than a patch to the pinned tree on purpose. `west update` silently
+# reverts patches — firmware/patches/README.md records that trap after it caught us once — while a
+# module survives it. Upstreaming is then a file copy rather than a re-derivation.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: pic32cm-pl-nvmctrl
+build:
+  cmake: .
+  kconfig: Kconfig
+  settings:
+    dts_root: .
