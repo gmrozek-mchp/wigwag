@@ -1,3 +1,13 @@
 {
-    "specstory.cloudSync.enabled": "never"
+    "specstory.cloudSync.enabled": "never",
+
+    // Worktrees live inside the repo, so without these every file appears twice in
+    // this window — once from main, once from the other branch — and it is easy to
+    // edit the wrong copy. Open a worktree as its own window instead.
+    "files.exclude": {
+        "**/.claude/worktrees": true
+    },
+    "search.exclude": {
+        "**/.claude/worktrees": true
+    }
 }

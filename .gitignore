@@ -35,5 +35,8 @@ mosquitto.db
 # --- session transcript archive (SpecStory extension) ---
 .specstory/
 
+# --- git worktrees, when a second session works on its own branch (EnterWorktree) ---
+.claude/worktrees/
+
 # --- macOS ---
 .DS_Store
