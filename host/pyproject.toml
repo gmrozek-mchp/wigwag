@@ -13,6 +13,14 @@ dependencies = [
     "paho-mqtt>=2.1",
 ]
 
+# The wired transport only (ADR-0020). Optional because most installations publish to a
+# broker and should not have to install a serial library to do it. pyserial is pure Python
+# on every platform -- termios on POSIX, ctypes to Win32 -- so there is no build step.
+[project.optional-dependencies]
+serial = [
+    "pyserial>=3.5",
+]
+
 [project.scripts]
 wigwagd = "wigwagd.__main__:main"
 wigwag = "wigwagd.cli:main"

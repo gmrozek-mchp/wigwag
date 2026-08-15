@@ -7,6 +7,80 @@ Entries record what was done, why, and — importantly — what was tried and re
 
 ---
 
+## 2026-08-15 — the daemon learns to speak over a wire, and USBCFG loses its justification
+
+**Done** — `SerialPublisher` behind the `Publisher` protocol the daemon already had, so a device wired
+to this machine needs no broker, no Wi-Fi credentials and no provisioning. **ADR-0020**, D114–D116.
+D111 is now built on both sides. 110 host tests, up from 93.
+
+### Corrected on USBCFG, and it matters
+
+I had claimed `USBCFG` makes transport selection "a reading rather than a guess". Pushed on it, and
+it does not hold up: **the device is USB-powered** (ADR-0009), so an unplugged cable is a *power-off*,
+not an observable deassert. The only thing the pin distinguishes is charger-versus-computer at boot —
+and a charger simply produces no bytes, so the device falls to Wi-Fi after the TTL anyway. `USBCFG`
+reduces to a boot-latency optimisation.
+
+`SSPND` is worse: it is not even GP0's factory default (that is `LED_URx`, per the datasheet pinout),
+and a suspended host drops to 2.5 mA, which this board exceeds with the bridge alone.
+
+So received bytes are both necessary *and* sufficient, exactly as suggested. That reopens D103's two
+GPIOs as D116 — the firmware already treats them as an optional latency hint and degrades to
+`TRANSPORT_USB_UNKNOWN`, so nothing has to change in code either way.
+
+### The dependency question, argued rather than assumed
+
+`termios` on POSIX and `pyserial` on Windows sounds thriftier and is not. Development happens on
+macOS, so the `termios` branch would be exercised constantly and the Win32 branch almost never —
+putting the *untested* path on the platform we cannot casually reproduce a bug report for. And it
+saves nothing: Windows needs `pyserial` regardless, so the dependency is in the graph either way;
+POSIX would merely take a different road to the same place, at the cost of implementing raw mode,
+partial writes and reopening twice.
+
+So: `pyserial` everywhere, an optional extra (`wigwagd[serial]`), imported lazily inside `start()`.
+That last part preserves the property `pyproject.toml` states outright and D31 established for paho —
+**the test suite and pure logic run with nothing installed** — which I verified rather than assumed:
+after importing every module, neither `serial` nor `paho` is in `sys.modules`.
+
+The strongest argument the other way, worth recording because it is not silly: a USB-only deployment
+needs no MQTT, so with `termios` it could run with *zero* dependencies. That would hold only on POSIX,
+and it would still need `pyserial` on Windows for the same variant.
+
+### `heartbeat()` on the interface, not in the loop
+
+The MQTT/serial asymmetry now lives in the type: `Publisher.heartbeat()`, which `MqttPublisher`
+implements as a documented no-op — retention plus the Last Will already speak for it — and
+`SerialPublisher` implements as `host on`. Better there than as a comment in the daemon's main loop,
+because the next person reading the protocol will see why one carrier needs chatter and the other
+does not.
+
+### Verified end to end, with no broker running
+
+Hook UDP → daemon → serial → device, the daemon owning the real console port:
+```
+serial > echo off / host on / state IDLE
+serial < wigwag: transport usb TRUSTED (ok)
+  SET BUSY  → serial < state BUSY
+  SET WAIT  → serial < state WAIT
+  SET ERROR → serial < state ERROR
+SIGTERM   → serial > host off
+```
+
+The drain earns its place immediately: the device's own `at RESETTING` and `at BACKOFF` lines came
+back through the daemon's log, which on a product board is the only window onto them at all.
+
+### Found by running it
+
+`timeouts 947`. The AT client kept retrying Wi-Fi for the entire session while USB held the device —
+wasted power and UART traffic, not a correctness fault. Recorded as **Q3** rather than patched:
+pausing the AT client would slow recovery when USB goes away, so it deserves a moment's thought
+instead of a quick fix at the end of a long change.
+
+**Tests** — 110 host tests (was 93), no broker, no device, no pyserial required. Firmware unchanged,
+so its 8 377 checks stand.
+
+---
+
 ## 2026-08-14 — transport selection, and the heartbeat MQTT never needed
 
 **Done** — `transport.c`: one transport at a time, chosen from evidence, with the lamps following the

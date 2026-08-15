@@ -98,8 +98,31 @@ class BrokerConfig:
 
 
 @dataclass(slots=True)
+class SerialConfig:
+    """The wired transport (ADR-0018, ADR-0020).
+
+    ``port`` empty means "use MQTT", which is the default. Setting it selects the serial
+    transport outright — deliberately explicit, because guessing which of two transports the
+    user meant is exactly the kind of cleverness that produces a light that silently does
+    nothing.
+
+    ``port = "auto"`` asks for discovery by the MCP2221A's factory USB identity
+    (VID 0x04D8, PID 0x00DD, from the datasheet's USBVID/USBPID registers). Discovery fails
+    loudly when it finds none or several, rather than picking one.
+    """
+
+    port: str = ""
+    baud: int = 115200
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.port.strip())
+
+
+@dataclass(slots=True)
 class Config:
     broker: BrokerConfig = field(default_factory=BrokerConfig)
+    serial: SerialConfig = field(default_factory=SerialConfig)
     topic_prefix: str = "wigwag"
     listen_host: str = DEFAULT_LISTEN_HOST
     listen_port: int = DEFAULT_LISTEN_PORT
@@ -140,6 +163,13 @@ class Config:
                 if key in broker:
                     setattr(self.broker, key, broker[key])
 
+        serial_ = data.get("serial", {})
+        if isinstance(serial_, dict):
+            if "port" in serial_:
+                self.serial.port = str(serial_["port"])
+            if "baud" in serial_:
+                self.serial.baud = int(serial_["baud"])  # type: ignore[arg-type]
+
         topics = data.get("topics", {})
         if isinstance(topics, dict) and "prefix" in topics:
             self.topic_prefix = str(topics["prefix"])
@@ -172,6 +202,10 @@ class Config:
             self.broker.username = v
         if v := env.get("WIGWAG_MQTT_PASSWORD"):
             self.broker.password = v
+        if v := env.get("WIGWAG_SERIAL_PORT"):
+            self.serial.port = v
+        if v := env.get("WIGWAG_SERIAL_BAUD"):
+            self.serial.baud = int(v)
         if v := env.get("WIGWAG_TOPIC_PREFIX"):
             self.topic_prefix = v
         if v := env.get("WIGWAG_LISTEN_PORT"):
@@ -190,3 +224,5 @@ class Config:
             raise ValueError(f"broker.port out of range: {self.broker.port}")
         if self.session_ttl <= 0:
             raise ValueError(f"session_ttl must be positive, got {self.session_ttl}")
+        if self.serial.enabled and self.serial.baud <= 0:
+            raise ValueError(f"serial.baud must be positive, got {self.serial.baud}")

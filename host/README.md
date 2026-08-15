@@ -53,6 +53,31 @@ uv sync          # creates .venv, installs paho-mqtt + pytest
 uv run pytest    # 93 tests, needs no broker and no network
 ```
 
+### The wired transport (no Wi-Fi, no broker)
+
+If the device is plugged into this machine, skip MQTT entirely:
+
+```sh
+uv sync --extra serial                     # adds pyserial
+WIGWAG_SERIAL_PORT=auto uv run wigwagd -v  # or /dev/cu.usbmodem…, or COM5
+```
+
+`auto` finds an MCP2221A by its factory USB identity (04d8:00dd) and refuses to guess if it sees
+none or several. The daemon then sends `state BUSY` lines and a `host on` heartbeat every 2 s, and
+the device trusts the wire while that keeps arriving — it has to, because a serial line has no
+retained topic and no Last Will to report a dead daemon (D111, `CONTEXT.md`). A clean shutdown sends
+`host off`, which the device honours at once.
+
+Run with `-vv` to see both directions, including the device's own diagnostics:
+
+```
+serial > state BUSY
+serial < wigwag: transport usb TRUSTED (ok)
+serial < wigwag: RESET BY WATCHDOG (rcause 10)
+```
+
+That log is the only place a host ever sees those, so it is worth turning up when something is odd.
+
 `uv sync` is the only build step. On Windows use PowerShell or Git Bash; the commands
 are identical.
 
@@ -426,7 +451,7 @@ non-default port needs both sides to agree.
 ## 10. Verifying and troubleshooting
 
 ```sh
-uv run pytest                              # 93 tests, no broker needed
+uv run pytest                              # 110 tests, no broker and no device needed
 uv run wigwag config                       # effective configuration
 uv run wigwag status                       # displayed state + live sessions
 uv run wigwag watch                        # print the aggregate as it changes

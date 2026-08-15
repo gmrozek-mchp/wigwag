@@ -59,3 +59,14 @@ listen_port = 9410
 # cannot wedge the light red forever. Longer than any plausible single tool call,
 # short enough to recover unattended. See ADR-0004.
 session_ttl = 900
+
+# The wired transport (ADR-0018, ADR-0020). Leave `port` unset to publish over MQTT, which is the
+# default. Setting it selects serial outright: the device is attached to this machine, and no broker
+# is involved at all -- so no Wi-Fi credentials, no broker address, and nothing to provision.
+#
+# `port = "auto"` discovers an MCP2221A by its factory USB identity (04d8:00dd) and refuses to guess
+# if it finds none or several. Needs the extra: pip install 'wigwagd[serial]'
+#
+# [serial]
+# port = "auto"          # or "/dev/cu.usbmodem1234", or "COM5" on Windows
+# baud = 115200

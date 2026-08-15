@@ -239,9 +239,12 @@ FET selection: logic-level N-channel, Vgs(th) low enough to fully enhance at 3.3
 | **D108** | **Settings persist via NVS in the 4 KB storage partition; stored values beat build-time defaults.** NVS rather than a hand-rolled blob: the hard part is consistency across a power cut and even sector wear, not storing bytes. Costs **302 B of RAM** for the string cache, because NVS returns copies rather than addresses into mapped flash | built |
 | **D109** | **`set` stages, `save` commits, `brightness` and `gain` also apply immediately.** Calibration is judged by eye, so it must be visible before it is stored; a half-typed network stays recoverable. Replies say `(not saved)` so the distinction is visible rather than remembered | settled |
 | **D110** | **Secrets are never printed back** — `show` reports `<set>`/`<unset>` for the Wi-Fi passphrase and broker password, and unknown keys default to secret so the failure direction is printing less | settled |
-| **D111** | **The wired path demands a *periodic* `host on`, within 10 s.** Over MQTT `wigwag/host_online` is retained once with `0` as the Last Will, so the broker holds the value and reports the death; a serial line has neither, and `USBCFG` cannot help because a machine whose daemon crashed still enumerates. Five missed beats at the daemon's existing 2 s tick, and the same 10 s budget as D34. **The daemon does not send this yet** — host-side work, needing the `pyserial`-on-Windows decision | built (device side) |
+| **D111** | **The wired path demands a *periodic* `host on`, within 10 s.** Over MQTT `wigwag/host_online` is retained once with `0` as the Last Will, so the broker holds the value and reports the death; a serial line has neither, and `USBCFG` cannot help because a machine whose daemon crashed still enumerates. Five missed beats at the daemon's existing 2 s tick, and the same 10 s budget as D34. The daemon sends it from its existing 2 s loop (`SerialPublisher`) | built |
 | **D112** | **USB outranks a healthy Wi-Fi link, and a quiet host goes fail-visible even while Wi-Fi is up.** Untrusted immediately on staleness, then a 5 s release window before handing back — switching straight to a possibly-staler retained MQTT state would trade a known unknown for an unknown one. An orderly `host off` or a deasserted `USBCFG` skips the window. Verified on hardware | built |
 | **D113** | **No SSID configured means the AT client never starts.** Previously it reset, timed out and backed off forever against a network named `""`. That is the wired variant's normal state, and it is the concrete form of ADR-0018's "no credentials needed on the wired path" | built |
+| **D114** | **`pyserial` on every platform, lazily imported, as an optional extra** (`wigwagd[serial]`) rather than `termios` on POSIX and `pyserial` on Windows. A split backend would make Windows the *untested* path while development happens on macOS, and it saves nothing — Windows needs the dependency either way. Lazy import keeps D31's property that the test suite runs with nothing installed (ADR-0020) | built |
+| **D115** | **Serial port discovery is opt-in and refuses to guess.** `port = "auto"` matches the MCP2221A's factory USB identity, VID `0x04D8` / PID `0x00DD` (datasheet Registers 1-5 to 1-8); zero or several matches is an error. A daemon that silently picked the first of two serial ports would eventually drive somebody's 3D printer | built |
+| **D116** | **Reopens D103.** `USBCFG`/`SSPND` buy less than ADR-0018 claimed: the device is USB-powered (ADR-0009), so an unplugged cable is a power-off rather than an observable deassert, and a charger simply produces no bytes — so received bytes are both necessary *and* sufficient. `USBCFG` reduces to a boot-latency optimisation, and `SSPND` is not even GP0's factory default (that is `LED_URx`). Worth dropping the two pins unless a reason appears | open |
 
 ---
 
@@ -500,9 +503,12 @@ numbers, stock and design traps are in [`usb-serial-and-bootloader.md`](usb-seri
 | Q1 | Add an `MCP2221A` USB-serial bridge? | **Resolved 2026-08-14 — yes, fitted and populated.** D102/D103, ADR-0018 |
 | Q2 | Is USB a peer to MQTT, a variant, or diagnostics only? | **Resolved 2026-08-14 — one transport at a time, chosen from `USBCFG`.** D104, ADR-0018 |
 
-Still open on that thread: the wire protocol for the USB path, and whether the daemon's serial
-backend justifies a `pyserial` dependency on Windows (`termios` suffices on macOS and Linux, and
-ADR-0010 makes the host cross-platform). Neither blocks the PCB.
+Both resolved: the wire protocol is in `CONTEXT.md`, and the dependency question is D114/ADR-0020.
+
+| # | Question | Where it stands |
+|---|---|---|
+| Q3 | Should the AT client keep retrying Wi-Fi while USB holds the device? | **Open.** Observed on hardware: 947 accumulated timeouts during one end-to-end session. Wasted power and UART traffic, not a correctness fault. Pausing it would slow recovery when USB goes away, so it needs a moment's thought rather than a quick patch |
+| Q4 | Drop `USBCFG`/`SSPND` from the pin plan? | **Open — D116.** Bytes turn out to be necessary and sufficient |
 
 
 | # | Question | Assumption if unanswered |

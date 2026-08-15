@@ -96,9 +96,11 @@ retains, and nothing notices a daemon that stops. `USBCFG` does not close the ga
 computer whose daemon has crashed still enumerates. So the wired path is the one place the device
 demands *periodic* evidence, on the same 10 s budget D34 sets for the broker.
 
-**The daemon does not send this yet.** It has no serial backend, and its 2 s loop currently only
-writes a status file. Adding one is host-side work, and needs a decision about `pyserial` on Windows
-(`termios` suffices on macOS and Linux, and ADR-0010 makes the host cross-platform).
+The daemon sends this from its existing 2 s loop, so five beats fit inside the device's window
+(`SerialPublisher`, ADR-0020). Set `WIGWAG_SERIAL_PORT` — or `serial.port` in the config file — and the
+daemon uses the wire instead of a broker; `auto` discovers the MCP2221A by its factory USB identity
+(04d8:00dd). `host off` is sent on a clean shutdown, which the device honours immediately rather than
+waiting out its timeout.
 
 ### Hook → daemon protocol
 

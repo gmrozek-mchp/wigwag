@@ -14,7 +14,7 @@ from .config import Config, config_path
 from .daemon import Daemon, write_status_file
 from .listener import UdpListener
 from .paths import status_path
-from .publisher import MqttPublisher, NullPublisher
+from .publisher import MqttPublisher, NullPublisher, SerialPublisher
 
 log = logging.getLogger("wigwagd")
 
@@ -56,11 +56,21 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     log.info("config from %s", cfg.source)
-    # Rule 4: say the uncomfortable thing rather than let a weak setup look fine.
-    for warning in cfg.broker.warnings():
-        log.warning("%s", warning)
+    # Rule 4: say the uncomfortable thing rather than let a weak setup look fine. Broker warnings
+    # are meaningless when the broker is not in use, so they are skipped rather than confusing.
+    if not cfg.serial.enabled:
+        for warning in cfg.broker.warnings():
+            log.warning("%s", warning)
 
-    publisher = NullPublisher() if args.dry_run else MqttPublisher(cfg)
+    # One transport, chosen explicitly (ADR-0018): a configured serial port means the device is
+    # wired to this machine, and there is then no broker in the picture at all.
+    if args.dry_run:
+        publisher = NullPublisher()
+    elif cfg.serial.enabled:
+        log.info("wired transport: serial %s", cfg.serial.port)
+        publisher = SerialPublisher(cfg)
+    else:
+        publisher = MqttPublisher(cfg)
     daemon = Daemon(cfg, publisher)
 
     try:
@@ -97,6 +107,14 @@ def main(argv: list[str] | None = None) -> int:
             if now - last_sweep >= 30.0:
                 daemon.sweep()
                 last_sweep = now
+            # Tell the transport we are still here. A no-op over MQTT, where retention and the
+            # Last Will already speak for us; `host on` over serial, which has neither and forgets
+            # us after 10 s (D111). This loop's 2 s period gives five chances before that.
+            try:
+                publisher.heartbeat()
+            except Exception as exc:  # noqa: BLE001 - a light must never take the daemon down
+                log.warning("heartbeat failed: %s", exc)
+
             try:
                 write_status_file(spath, daemon.snapshot())
             except OSError as exc:
