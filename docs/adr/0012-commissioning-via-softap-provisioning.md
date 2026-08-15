@@ -64,7 +64,7 @@ still being written.
   the completion callback.** That is what keeps this feasible in 8 KB.
 - **Lamp feedback during provisioning:** all three lamps cycle slowly in sequence — a
   pattern that appears in no other state, so provisioning mode is unmistakable and cannot
-  be confused with `WAIT` or the amber link-lost flicker (ADR-0007).
+  be confused with `WAIT` or the link-lost wigwag (ADR-0007).
 - On success, credentials are persisted by the module for auto-reconnect, and the device
   drops back to station mode.
 

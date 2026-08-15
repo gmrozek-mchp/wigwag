@@ -53,7 +53,7 @@ static void on_message(void *user, const char *topic, const char *payload)
 static void on_link(void *user, bool linked)
 {
 	(void)user;
-	printf("[app] link     %s\n", linked ? "LINKED" : "UNLINKED (fail-visible: amber flicker)");
+	printf("[app] link     %s\n", linked ? "LINKED" : "UNLINKED (fail-visible: red/yellow wigwag)");
 	fflush(stdout);
 }
 

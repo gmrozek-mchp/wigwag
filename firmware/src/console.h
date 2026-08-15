@@ -33,4 +33,13 @@ int console_init(struct wigwag_settings *s, struct transport *t);
 /** Drain received bytes and execute any complete lines. Call from the service loop. */
 void console_poll(void);
 
+/**
+ * Start a Wi-Fi connectivity test, implemented by main.c because it owns the AT client.
+ *
+ * Returns 0 if a test was started, or a negative errno explaining why not. Must return immediately:
+ * the test is advanced by the service loop, so the console stays responsive and the watchdog keeps
+ * being fed (ADR-0016) instead of a 30-second command blocking everything.
+ */
+int wifi_test_start(void);
+
 #endif /* CONSOLE_H */

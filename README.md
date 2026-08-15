@@ -10,7 +10,7 @@ needs you.
 | 🟢 green | idle / ready for input | steady, dim |
 | 🟡 yellow | thinking / working | breathing ~0.8 Hz |
 | 🔴 red | **waiting on you** (permission, input) | steady, then slow blink after 30 s |
-| 🟠 amber flicker | link lost — state unknown | deliberately distinct |
+| 🔴🟡 red/yellow wigwag | link lost — state unknown | alternating at 1 Hz, one at a time |
 
 Wi-Fi connected, so it can sit anywhere on the desk or a shelf. Microchip silicon
 (PIC32CM PL10 + RNWF02) running Zephyr RTOS, in a 3D-printed enclosure.
@@ -65,7 +65,7 @@ the 8 KB footprint numbers — see **[firmware/README.md](firmware/README.md)**.
 ## Two things it deliberately gets right
 
 **It never lies.** If the device loses the broker for more than 10 seconds, it stops showing the
-last known state and switches to an obviously-wrong amber flicker. A status light that is
+last known state and wigwags red/yellow, which no working state resembles. A status light that is
 confidently stale is worse than one that admits ignorance.
 
 **It never breaks the tool it observes.** The hook client always exits 0, writes nothing to

@@ -42,7 +42,7 @@ trade for a nicer light.
 
 ## Rule 4 — fail-visible, never lie
 
-If the device can't confirm the current state, it must look obviously wrong (amber flicker)
+If the device can't confirm the current state, it must look obviously wrong (the red/yellow wigwag)
 rather than confidently display a stale one. See ADR-0007. This applies to the host too:
 prefer surfacing "I don't know" over a plausible guess.
 

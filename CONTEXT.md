@@ -17,9 +17,12 @@ There are exactly four states. They are named in code and on the wire in **upper
 | `IDLE` | it's done and ready for you | green | steady, dim |
 | `BUSY` | it's working; no action needed | yellow | breathing ~0.8 Hz |
 | `WAIT` | **it's blocked on you** | red | steady → slow blink after 30 s |
-| `ERROR` | the turn died (API error, rate limit) | red + yellow | fast alternate |
+| `ERROR` | the turn died (API error, rate limit) | red + yellow | **both steady** — the only state lighting two lamps at once |
 
-`UNKNOWN` is deliberately *not* a state. It is a **link condition** — see below.
+`UNKNOWN` is deliberately *not* a state. It is a **link condition** — see below — and it is shown by
+the **wigwag**: red and yellow alternating at 1 Hz, one at a time. That is the railroad crossing signal
+this device is named after, and it is deliberately unlike all four states above: `ERROR` uses the same
+two lamps but holds them both steady, so the two cannot be confused.
 
 ## Terms
 
@@ -37,7 +40,7 @@ There are exactly four states. They are named in code and on the wire in **upper
   TTL, not changing the state.
 - **link condition** — whether the device currently trusts what it is displaying.
   `LINKED` (broker reachable) or `UNLINKED` (> 10 s without the broker). `UNLINKED` overrides
-  the lamps with the amber flicker.
+  the lamps with the red/yellow wigwag.
 - **fail-visible** — the governing principle: when the device cannot know the state, it must
   *look* wrong rather than display a stale state confidently. See ADR-0007.
 - **producer** — anything that reports state. Today: Claude Code hooks and the CLI push API.
@@ -57,7 +60,7 @@ There are exactly four states. They are named in code and on the wire in **upper
 - **provisioning mode** — the temporary state entered by long-pressing the button, in which the
   module runs as a Soft-AP and serves its provisioning service. Signalled by all three lamps
   cycling in sequence — a pattern used nowhere else, so it cannot be mistaken for `WAIT` or the
-  amber link-lost flicker. Not a `state` and not a `link condition`; a distinct operating mode.
+  link-lost wigwag. Not a `state` and not a `link condition`; a distinct operating mode.
 
 ## Wire protocol
 

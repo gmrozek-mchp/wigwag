@@ -480,7 +480,7 @@ is not working and the device will come up blank.
 | Device connects then drops repeatedly | two clients sharing one `client_id`; set a distinct one |
 | `paho-mqtt is not installed` | run `uv sync`, or use `--dry-run` |
 | Broker refuses the daemon | `allow_anonymous false` with no credentials — set `WIGWAG_MQTT_USERNAME`/`_PASSWORD` |
-| Light shows amber flicker | device cannot reach the broker for >10 s — working as designed (ADR-0007) |
+| Lamps wigwag red/yellow | device cannot reach the broker for >10 s — working as designed (ADR-0007) |
 | Nothing after a broker restart | add `persistence true` so retained messages survive |
 
 The hook client is deliberately silent and always exits 0, so it will never tell you it

@@ -42,7 +42,7 @@ struct rnwf_at_io {
  * duration of the call — copy what you need.
  *
  * on_link reports the link condition in CONTEXT.md's sense: true once subscribed and trusted,
- * false the moment that stops being true. ADR-0007 hangs off this — false must drive the amber
+ * false the moment that stops being true. ADR-0007 hangs off this — false must drive the
  * flicker rather than leave a stale lamp lit.
  */
 struct rnwf_at_callbacks {
@@ -155,6 +155,15 @@ void rnwf_at_feed(struct rnwf_at *at, const uint8_t *data, size_t len);
 
 /** Advance timers and the script. Call regularly with a monotonic millisecond clock. */
 void rnwf_at_tick(struct rnwf_at *at, uint32_t now_ms);
+
+/**
+ * What the client is currently trying to do, in words.
+ *
+ * The point of diagnostics for a configuration mistake: a wrong passphrase fails at "associate and get
+ * an IP", a wrong broker hostname at "resolve, connect and CONNACK", and a module that is not wired
+ * correctly at "module responding". Those are three different problems that otherwise look identical.
+ */
+const char *rnwf_at_step_str(const struct rnwf_at *at);
 
 /** Publish. Returns 0 on success, -1 if not ready or the command would not fit. */
 int rnwf_at_publish(struct rnwf_at *at, const char *topic, const char *payload, bool retain);

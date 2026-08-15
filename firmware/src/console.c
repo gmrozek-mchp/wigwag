@@ -100,7 +100,8 @@ static void print_help(void)
 	       "  brightness <0-255>       applies now\n"
 	       "  gain green|yellow|red <0-255>   per-lamp calibration, applies now\n"
 	       "  echo on|off              off for a host program driving this port\n"
-	       "  host on|off              host liveness; repeat within 10 s to stay trusted\n");
+	       "  host on|off              host liveness; repeat within 10 s to stay trusted\n"
+	       "  test wifi                try the stored wifi/broker settings, without committing\n");
 }
 
 static void print_one(enum cmd_key key)
@@ -166,6 +167,9 @@ static void exec(struct cmd *c, bool ok)
 			break;
 		case CMD_GAIN:
 			printk("bad gain: expected green|yellow|red and 0-255\n");
+			break;
+		case CMD_TEST_WIFI:
+			printk("bad test: only `test wifi` is supported\n");
 			break;
 		default:
 			printk("unknown command; try help\n");
@@ -257,6 +261,21 @@ static void exec(struct cmd *c, bool ok)
 		printk("echo %s\n", (c->num != 0U) ? "on" : "off");
 		break;
 
+	case CMD_TEST_WIFI: {
+		int ret = wifi_test_start();
+
+		if (ret == -EALREADY) {
+			printk("test already running\n");
+		} else if (ret == -ENODEV) {
+			printk("cannot test: module uart unavailable\n");
+		} else if (ret == -EINVAL) {
+			printk("cannot test: no ssid configured; `set ssid ...` first\n");
+		} else if (ret != 0) {
+			printk("cannot test (%d)\n", ret);
+		}
+		break;
+	}
+
 	case CMD_HOST:
 		if (c->num == 0U && tport != NULL) {
 			/*
@@ -328,7 +347,7 @@ void console_poll(void)
 			/*
 			 * Only `host` and `state` count — see cmd_is_host_activity(). Every recognised
 			 * command used to, which meant a person configuring Wi-Fi over this very wire
-			 * claimed the transport and then lost it ten seconds later, flickering amber on a
+			 * claimed the transport and then lost it ten seconds later, wigwagging on a
 			 * device that was working fine. A rejected line never counts either: noise on a
 			 * wire is not a host.
 			 */

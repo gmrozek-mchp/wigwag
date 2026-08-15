@@ -271,6 +271,22 @@ bool cmd_parse(char *line, struct cmd *out)
 		return true;
 	}
 
+	if (strcmp(verb, "test") == 0) {
+		char *what;
+
+		(void)split(rest, &what);
+
+		/* Only one thing is testable so far, and it is spelled out rather than implied. */
+		if (strcmp(what, "wifi") != 0) {
+			out->kind = CMD_TEST_WIFI;
+			return false;
+		}
+
+		out->kind = CMD_TEST_WIFI;
+
+		return true;
+	}
+
 	if (strcmp(verb, "host") == 0) {
 		char *value;
 

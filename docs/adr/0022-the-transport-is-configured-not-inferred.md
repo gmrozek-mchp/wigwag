@@ -47,7 +47,7 @@ first instruction. Whether it may be *believed* still depends on evidence: a `ho
 release window, and no handover, because there is nothing to hand over to.
 
 **A configured transport that is not working goes fail-visible and stays there.** That is the point:
-amber means "I cannot tell you about the thing you asked about", which is honest, where quietly
+the wigwag means "I cannot tell you about the thing you asked about", which is honest, where quietly
 answering with the other transport's data would not be (Rule 4, ADR-0007).
 
 **A wired device never starts the RNWF02** (D118). Not merely to save the retries — an end-to-end

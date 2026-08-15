@@ -2,7 +2,7 @@
  * Link supervision — whether the device is allowed to believe what it is showing.
  *
  * CONTEXT.md calls this the *link condition*, deliberately not a state: LINKED or UNLINKED. It is
- * the input to the fail-visible rule (Rule 4, ADR-0007) — UNLINKED must drive the amber flicker
+ * the input to the fail-visible rule (Rule 4, ADR-0007) — UNLINKED must drive the wigwag
  * rather than leave a stale lamp lit.
  *
  * The AT client reports its own connection progress, but that is not sufficient on its own. There
@@ -62,7 +62,7 @@ struct link {
 	/*
 	 * Grace period after the AT client links, before demanding to have heard from the host.
 	 * The retained host_online arrives a moment after subscribing, and flapping UNLINKED ->
-	 * LINKED in that window would show a spurious amber flicker on every connect.
+	 * LINKED in that window would show a spurious wigwag on every connect.
 	 */
 	uint32_t linked_at_ms;
 	uint32_t host_grace_ms;

@@ -35,24 +35,29 @@ static bool square(uint32_t now_ms, uint32_t period_ms)
 }
 
 /*
- * The amber flicker. Rule 4 and ADR-0007: when the device cannot confirm what it is showing it must
+ * The fail-visible wigwag. Rule 4 and ADR-0007: when the device cannot confirm what it is showing it must
  * look *obviously wrong*, so this is deliberately not an animation — an irregular stutter across
  * red and yellow with green held off, at a cadence that matches none of the real behaviours.
  *
  * Green is off on purpose. Green means "idle, ready for you", and the one thing the device must
  * never imply while blind is that everything is fine.
  */
-static struct lamp_frame flicker(uint32_t now_ms)
+static struct lamp_frame wigwag(uint32_t now_ms)
 {
-	static const uint8_t amber_y[] = { 255, 40, 180, 20, 90, 255, 10, 140 };
-	static const uint8_t amber_r[] = { 60, 200, 30, 255, 15, 120, 220, 45 };
-	const uint32_t slot = (now_ms / LAMP_FLICKER_STEP_MS) %
-			      (uint32_t)(sizeof(amber_y) / sizeof(amber_y[0]));
 	struct lamp_frame f;
+	bool red_half = square(now_ms, LAMP_WIGWAG_PERIOD_MS);
 
+	/*
+	 * Exactly one lamp at a time, alternating: red, yellow, red, yellow. Full brightness, because
+	 * this is the one condition the device must not be able to be dimmed out of (lamp_scale floors
+	 * it at LAMP_FAULT_MIN_BRIGHTNESS).
+	 *
+	 * Never both together, which is what distinguishes it from ERROR — the only other pattern using
+	 * these two lamps, and a static one.
+	 */
 	f.level[LAMP_GREEN] = 0;
-	f.level[LAMP_YELLOW] = amber_y[slot];
-	f.level[LAMP_RED] = amber_r[slot];
+	f.level[LAMP_RED] = red_half ? LEVEL_MAX : 0U;
+	f.level[LAMP_YELLOW] = red_half ? 0U : LEVEL_MAX;
 
 	return f;
 }
@@ -63,7 +68,7 @@ struct lamp_frame lamp_render(enum wigwag_state state, bool linked, uint32_t now
 	struct lamp_frame f;
 
 	if (!linked) {
-		return flicker(now_ms);
+		return wigwag(now_ms);
 	}
 
 	memset(&f, 0, sizeof(f));
@@ -93,12 +98,14 @@ struct lamp_frame lamp_render(enum wigwag_state state, bool linked, uint32_t now
 		break;
 
 	case WIGWAG_ERROR:
-		/* Red and yellow alternating fast: the turn died, and that is not a normal state. */
-		if (square(now_ms, LAMP_ERROR_PERIOD_MS)) {
-			f.level[LAMP_RED] = LEVEL_MAX;
-		} else {
-			f.level[LAMP_YELLOW] = LEVEL_MAX;
-		}
+		/*
+		 * Red and yellow both on, steady. Two lamps at once happens in no other state, and being
+		 * static it cannot be confused with the fail-visible wigwag above or with WAIT's slow red
+		 * blink — which is the pair that matters most, since one means "it needs you" and this
+		 * means "it already died".
+		 */
+		f.level[LAMP_RED] = LEVEL_MAX;
+		f.level[LAMP_YELLOW] = LEVEL_MAX;
 		break;
 
 	default:
@@ -106,7 +113,7 @@ struct lamp_frame lamp_render(enum wigwag_state state, bool linked, uint32_t now
 		 * Unreachable if the parser did its job. Falling back to the flicker rather than to
 		 * darkness or green keeps an impossible value visible instead of plausible.
 		 */
-		return flicker(now_ms);
+		return wigwag(now_ms);
 	}
 
 	return f;

@@ -196,7 +196,7 @@ static void test_only_host_on_and_state_are_host_activity(void)
 
 	/*
 	 * The distinction that stops a person configuring Wi-Fi from being mistaken for a daemon
-	 * driving the display — and from getting a spurious amber flicker ten seconds later.
+	 * driving the display — and from a spurious fail-visible wigwag ten seconds later.
 	 */
 	CHECK(run("host on", &c) && cmd_is_host_activity(&c), "host on is a host talking");
 	CHECK(run("state BUSY", &c) && cmd_is_host_activity(&c), "state is a host driving the display");
@@ -204,7 +204,7 @@ static void test_only_host_on_and_state_are_host_activity(void)
 	/*
 	 * `host off` must NOT claim. It is the same verb meaning the opposite, and letting it claim was
 	 * a real bug: a bare `host off` on a device that had never seen a host latched it to USB and
-	 * then distrusted it, so the lamps sat amber with Wi-Fi ignored until a reset.
+	 * then distrusted it, so the lamps wigwagged with Wi-Fi ignored until a reset.
 	 */
 	CHECK(run("host off", &c) && !cmd_is_host_activity(&c),
 	      "host off says there is no host, so it cannot claim the device");

@@ -55,8 +55,17 @@ struct lamp_frame {
 #define LAMP_BUSY_PERIOD_MS	1250	/* breathing ~0.8 Hz */
 #define LAMP_WAIT_ESCALATE_MS	30000	/* steady, then slow blink after 30 s */
 #define LAMP_WAIT_BLINK_MS	2000	/* the slow blink, 0.5 Hz */
-#define LAMP_ERROR_PERIOD_MS	250	/* red/yellow fast alternate, 4 Hz */
-#define LAMP_FLICKER_STEP_MS	70	/* amber flicker: deliberately not a rhythm */
+/*
+ * Fail-visible: red and yellow alternating at 1 Hz — a wigwag, which is the railroad crossing signal
+ * this project is named after and reads as "do not proceed" to anyone who sees it.
+ *
+ * This used to blend both lamps at irregular levels to simulate a flickering amber, on the theory that
+ * no legitimate state is arrhythmic. **There is no amber lamp** — three discrete, physically separated
+ * lamps cannot mix a colour — so on real hardware it read as two lamps flickering at random rather
+ * than as a signal. A clean alternation is unmistakable, and it is distinguished from every state
+ * below by being the only one that lights two lamps in sequence.
+ */
+#define LAMP_WIGWAG_PERIOD_MS	1000	/* full cycle: 500 ms red, 500 ms yellow */
 
 /*
  * Floor applied to the fail-visible pattern, whatever the runtime brightness says.
@@ -73,7 +82,7 @@ struct lamp_frame {
  * Render one frame.
  *
  * @param state          the aggregate state last received from the host
- * @param linked         the link condition; false overrides everything with the amber flicker
+ * @param linked         the link condition; false overrides everything with the fail-visible wigwag
  * @param now_ms         a monotonic millisecond clock, for animation phase
  * @param state_since_ms when @p state was adopted, for the WAIT escalation
  */

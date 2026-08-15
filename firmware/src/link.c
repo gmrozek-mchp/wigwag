@@ -2,7 +2,7 @@
  * Link supervision. See link.h for why this is separate from the AT client.
  *
  * The rule is deliberately conservative: LINKED requires positive evidence of every hop, and
- * anything unproven counts as UNLINKED. Fail-visible means erring toward the amber flicker, never
+ * anything unproven counts as UNLINKED. Fail-visible means erring toward the wigwag, never
  * toward a confident lamp (Rule 4, ADR-0007).
  *
  * SPDX-License-Identifier: Apache-2.0

@@ -38,6 +38,27 @@ static struct button button_state;
 static struct transport tport;
 
 /*
+ * Wi-Fi connectivity test (`test wifi`).
+ *
+ * The point is to try the stored settings *before* committing to them, because the alternative is
+ * `set transport wifi`, `save`, `reboot` and then staring at a device that will not say why it failed.
+ *
+ * Runs asynchronously, advanced by the service loop, for two reasons. A synchronous test would block
+ * for tens of seconds — the connect script alone allows 30 s to associate — which would starve the
+ * watchdog's 500 ms budget and reboot the device mid-test (ADR-0016). And the console must stay
+ * responsive while it runs.
+ */
+static struct {
+	bool running;
+	uint32_t started_ms;
+	uint8_t last_step;
+	uint32_t last_errors;
+} wifi_test;
+
+/* Generous: the script's own timeouts total more than 45 s if every step waits its full allowance. */
+#define WIFI_TEST_BUDGET_MS 60000U
+
+/*
  * Live settings: build-time defaults from Kconfig, overlaid by whatever is stored, editable over the
  * console (D37/D56). Static because the AT client borrows pointers into it and never copies.
  */
@@ -178,7 +199,18 @@ static void on_message(void *user, const char *topic, const char *payload)
 	}
 
 	printk("wigwag: state %s\n", wigwag_state_str(state));
-	lamp_pwm_set_state(state);
+
+	/*
+	 * Only when Wi-Fi owns the lamps. During `test wifi` on a wired device the module is connected
+	 * and subscribed, so retained states arrive here — applying them would be exactly the
+	 * substitution ADR-0022 exists to prevent, and would make a diagnostic command change the
+	 * display.
+	 */
+	if (transport_active(&tport) == TRANSPORT_WIFI) {
+		lamp_pwm_set_state(state);
+	} else {
+		printk("wigwag: (ignored: wifi does not own the lamps)\n");
+	}
 }
 
 static void on_link(void *user, bool linked)
@@ -188,6 +220,96 @@ static void on_link(void *user, bool linked)
 	/* One of several inputs to the link condition — link.h explains why it is not the only one. */
 	link_note_at(&link_state, linked, (uint32_t)k_uptime_get());
 	printk("wigwag: at link %s\n", linked ? "up" : "down");
+}
+
+/* At file scope so `test wifi` can bring the client up on demand, not only at boot. */
+static const struct rnwf_at_callbacks at_callbacks = {
+	.on_message = on_message,
+	.on_link = on_link,
+};
+
+int wifi_test_start(void)
+{
+	if (wifi_test.running) {
+		return -EALREADY;
+	}
+
+	if (settings.ssid[0] == '\0') {
+		return -EINVAL;
+	}
+
+	/*
+	 * Bring the module up on demand. On a wired device it was never started (D118), so this is the
+	 * one place the UART is initialised outside boot. Safe to call again if it already was: the
+	 * transport owns nothing here, only the client.
+	 */
+	if (rnwf_uart_init(&at_client, &module_cfg, &at_callbacks) != 0) {
+		return -ENODEV;
+	}
+
+	wifi_test.running = true;
+	wifi_test.started_ms = (uint32_t)k_uptime_get();
+	wifi_test.last_step = 0xFF;
+	wifi_test.last_errors = at_client.errors;
+
+	printk("test: trying ssid \"%s\" broker %s:%u%s\n", settings.ssid, settings.broker,
+	       settings.port, (settings.pass[0] != '\0') ? "" : " (open network)");
+
+	rnwf_at_start(&at_client, wifi_test.started_ms);
+
+	return 0;
+}
+
+/** Advance the test and narrate it. Called every loop while running. */
+static void wifi_test_service(uint32_t now)
+{
+	uint32_t elapsed = now - wifi_test.started_ms;
+
+	rnwf_uart_poll(&at_client);
+	rnwf_at_tick(&at_client, now);
+
+	/* Narrate each step as it is reached: this is the diagnostic the command exists for. */
+	if (at_client.step != wifi_test.last_step) {
+		wifi_test.last_step = at_client.step;
+		printk("test:   %s\n", rnwf_at_step_str(&at_client));
+	}
+
+	if (at_client.state == RNWF_AT_ST_READY) {
+		printk("test: PASS — associated, broker reachable, subscribed (%u ms)\n", elapsed);
+		printk("test: `set transport wifi` and `save`, then reboot, to use it\n");
+		wifi_test.running = false;
+		return;
+	}
+
+	/*
+	 * A module ERROR is the informative failure: it means the module refused a specific command, so
+	 * the step name says which setting is wrong. Reported on the first one rather than after the
+	 * backoff has retried and muddied the picture.
+	 */
+	if (at_client.errors != wifi_test.last_errors) {
+		printk("test: FAIL at \"%s\" — the module rejected it\n",
+		       rnwf_at_step_str(&at_client));
+		printk("test:   check the setting that step configures, then try again\n");
+		wifi_test.running = false;
+		return;
+	}
+
+	if (at_client.state == RNWF_AT_ST_BACKOFF) {
+		printk("test: FAIL at \"%s\" — timed out (%u ms)\n", rnwf_at_step_str(&at_client),
+		       elapsed);
+		printk("test:   %s\n",
+		       (at_client.step <= 4U)
+			       ? "no reply from the module, or the network did not accept us"
+			       : "the broker did not answer; check its address, port and that it is up");
+		wifi_test.running = false;
+		return;
+	}
+
+	if (elapsed > WIFI_TEST_BUDGET_MS) {
+		printk("test: FAIL — gave up after %u ms at \"%s\"\n", elapsed,
+		       rnwf_at_step_str(&at_client));
+		wifi_test.running = false;
+	}
 }
 
 /*
@@ -224,6 +346,14 @@ static void at_service(bool at_ready)
 		static enum link_condition link_reported = LINK_LINKED;
 		static bool announced_online;
 		uint32_t now;
+
+		/*
+		 * A running test services the module even on a wired device. It cannot reach the lamps —
+		 * on_message() checks who owns them — so this only produces console output.
+		 */
+		if (wifi_test.running) {
+			wifi_test_service((uint32_t)k_uptime_get());
+		}
 
 		if (at_ready) {
 			now = (uint32_t)k_uptime_get();
@@ -354,10 +484,6 @@ static void at_service(bool at_ready)
 
 int main(void)
 {
-	static const struct rnwf_at_callbacks cb = {
-		.on_message = on_message,
-		.on_link = on_link,
-	};
 	bool at_ready;
 
 	printk("wigwag: starting\n");
@@ -433,7 +559,7 @@ int main(void)
 		printk("wigwag: no ssid configured; set one, or `set transport usb`\n");
 		at_ready = false;
 	} else {
-		at_ready = (rnwf_uart_init(&at_client, &module_cfg, &cb) == 0);
+		at_ready = (rnwf_uart_init(&at_client, &module_cfg, &at_callbacks) == 0);
 		if (at_ready) {
 			printk("wigwag: module UART up, connecting to \"%s\" (%s)\n", module_cfg.ssid,
 			       (settings.pass[0] != '\0') ? "passphrase set" : "open");

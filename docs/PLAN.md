@@ -28,7 +28,7 @@ waiting on you — and when several sessions run at once, the one that needs you
 | **green** | idle / ready for input | steady, dim |
 | **yellow** | thinking / working | breathing ~0.8 Hz |
 | **red** | waiting on you (permission, input) | steady, then slow blink after 30 s |
-| _amber flicker_ | link lost — state unknown | deliberately distinct |
+| _red/yellow wigwag_ | link lost — state unknown | alternating at 1 Hz, deliberately distinct |
 
 Complete project: firmware, host software, custom PCB, 3D-printed enclosure. **Microchip
 silicon is a hard requirement.** Wi-Fi, untethered. Zephyr RTOS. Custom PCB. Plus a reusable
@@ -167,7 +167,7 @@ FET selection: logic-level N-channel, Vgs(th) low enough to fully enhance at 3.3
 | **D54** | Coalescing keyed on `state` + session count, **not** `reason` — else every tool call republishes twice | built |
 | **D55** | `topic_prefix` and `client_id` configurable, so two lights can share one broker | built |
 | D33 | Hooks always `exit 0` and write **nothing** to stdout | settled |
-| D34 | Fail-visible: > 10 s without broker → amber flicker | settled |
+| D34 | Fail-visible: > 10 s without broker → the red/yellow wigwag (D121) | settled |
 | D35 | Button publishes raw presses; the host decides meaning | settled |
 | **D56** | **Commissioning: compile-time Kconfig for v1; SoftAP provisioning via the module's own service for v1.1** (ADR-0012). *Superseded as the primary path by D105 — configuration is set over the console and stored, and Kconfig now supplies only defaults. ADR-0012 stays accepted for the phone-only case, and D58's long-press stays reserved for it* | settled |
 | **D57** | **USB commissioning is impossible** — PL10 has no USB peripheral (Table 8-1). Would need an MCP2221A bridge and would reverse D24 | settled |
@@ -249,6 +249,8 @@ FET selection: logic-level N-channel, Vgs(th) low enough to fully enhance at 3.3
 | **D118** | **A wired device never starts the module at all** — resolves Q3. Originally "stop servicing it once USB latches"; with the transport a setting (D119) it is simply never brought up, which is stronger. Not only to save the waste an end-to-end session measured at 947 AT timeouts, but because a running, subscribed module would deliver MQTT states to the lamps — the substitution D119 exists to prevent | built |
 | **D119** | **The transport is a stored setting, not an inference** — `set transport usb\|wifi`, shown first by `show`. Nothing the outside world does can change it: console traffic cannot take the lamps from a wireless device, and a Wi-Fi link cannot take them from a wired one. Both earlier designs (D104 infer, D117 latch) let a cable plugged in for power or configuration silently repurpose the device. ADR-0013 had already settled this shape for the broker address and this should have followed it (ADR-0022) | built |
 | **D120** | **A fresh device defaults to `usb`.** Wi-Fi cannot work until an SSID and passphrase are set, so anyone using it is already configuring and can set the transport at the same time; the wire needs nothing. The one easy mistake — setting an SSID on a wired device — is called out by the console at the moment it happens and repeated in the boot banner | built |
+| **D121** | **Fail-visible is a red/yellow wigwag at 1 Hz, and `ERROR` is both lamps steady.** There is no amber lamp — three discrete lamps cannot blend a colour — so the old "amber flicker" (both lamps at irregular levels, 70 ms steps) read as two lamps flickering at random rather than as a signal. A wigwag is the crossing signal this device is named after and is unmistakable. `ERROR` moved to both-steady because it previously *also* alternated red/yellow: the two are now distinguished by kind, not tempo, and `ERROR` stays distinct from `WAIT`'s slow red blink — the pair that matters most, since one means "it needs you" and the other "it already died". ADR-0007's decision is unchanged; only the pattern | built |
+| **D122** | **`test wifi` tries the stored settings without committing to them**, naming the connect-script step it reaches. A wrong passphrase fails at *associate and get an IP*, a wrong broker at *resolve, connect and CONNACK*, a miswired module at *module responding* — three problems that otherwise look identical. Runs asynchronously so the console stays responsive and the watchdog keeps being fed; brings the module up on demand; and states arriving from the broker mid-test are ignored, since a diagnostic must not change the display | built |
 
 ---
 
@@ -436,7 +438,7 @@ Remaining Phase 0 loose end: nothing is committed to git yet (D16).
     SERCOM0 through a 3.3 V USB-UART adapter, tested against the real broker. **Not `native_sim`:**
     Zephyr's POSIX architecture does not work on macOS (D66, ADR-0015).
 16. ✅ `lamp.c`: 3 PWM channels, ~100 Hz render, gamma-corrected steady/breathe/blink/flicker.
-17. `button.c` (debounce + publish) and `link.c` (supervision → amber flicker, WDT). **Done** — plus
+17. `button.c` (debounce + publish) and `link.c` (supervision → fail-visible wigwag, WDT). **Done** — plus
     brightness (D88–D90), `wigwag/online` (D92) and the watchdog (ADR-0016, D93–D95).
     `link.c` done and verified across all three failure domains (D75). `button.c` done and verified
     on hardware — 14 presses, no duplicates, long-hold at 3 s — but **polled rather than
@@ -508,7 +510,7 @@ Debuggers already on hand (PICkit 5, PICkit Basic, Atmel-ICE, J-Link) all work v
 - **D49 gate:** a breathing LED on PL10 hardware proves TCC PWM before any layout is committed.
 - **Footprint gate:** `ram_report` ≤ 8 KB with margin, recorded per milestone.
 - **Hook safety:** hooks emit nothing on stdout and `exit 0` with the daemon stopped.
-- **On hardware:** `west flash -r pyocd`; kill the broker → amber flicker within 10 s; restore →
+- **On hardware:** `west flash -r pyocd`; kill the broker → wigwag within 10 s; restore →
   retained message restores correct state; power-cycle → correct state with no host action.
 - **Enclosure:** `make` renders STLs; `assert()`s fail loudly on RF clearance violations.
 

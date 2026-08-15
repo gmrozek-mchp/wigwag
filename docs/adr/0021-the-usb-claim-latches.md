@@ -80,14 +80,14 @@ the point.
 | **Latch, but release on `host off`** | Reads well — a clean shutdown as an explicit handover — and reintroduces the substitution on the orderly path. A daemon shutting down knows it is leaving; it does not know that the broker's publisher is the same machine. |
 | **Release only if Wi-Fi was trusted before USB claimed** | Uses "Wi-Fi was demonstrably live" as evidence of intent. Rejected as conditional state that still cannot establish the thing that matters: whether it is the *same machine*. |
 | **Identify the host so equivalence is knowable** | The honest fix for the underlying ambiguity: have the daemon send an identity and carry the same one in MQTT payloads, then the device could tell whether a fallback preserves meaning. Genuinely better, and disproportionate for a desk light — it adds an identity concept to the protocol, the config and both publishers. Noted as the escape hatch if multi-source setups ever become normal. |
-| **Keep `USBCFG` for faster loss of trust** | Would shave up to 10 s off going amber when a dock is unplugged while still powering the device. Rejected: it is a latency improvement inside a budget D34 already accepts, it needs a pin, a trace, a devicetree binding and its own tests, and the firmware input path can be restored in a devicetree change if it ever earns its place. |
+| **Keep `USBCFG` for faster loss of trust** | Would shave up to 10 s off going fail-visible when a dock is unplugged while still powering the device. Rejected: it is a latency improvement inside a budget D34 already accepts, it needs a pin, a trace, a devicetree binding and its own tests, and the firmware input path can be restored in a devicetree change if it ever earns its place. |
 | **Keep the two GP pins for activity LEDs instead** | Not rejected, just not an MCU concern: `GP0` and `GP1` default to `LED_URx`/`LED_UTx`, so two LEDs give a human "the host is talking / the device is talking" with no MCU pins and no configuration. Worth considering on the PCB purely as an indicator. |
 
 ## Consequences
 
 **Accepted costs**
 - A device whose host disappears while still powered — a mains-powered dock unplugged from the laptop,
-  or a laptop asleep on a charging port — sits amber indefinitely rather than using an available Wi-Fi
+  or a laptop asleep on a charging port — sits fail-visible indefinitely rather than using an available Wi-Fi
   source. Useless but truthful, which is the side Rule 4 already picked.
 - Reconfiguring from wired back to wireless needs a reset, and if the daemon is still running on serial
   it will reclaim immediately after that reset. Stop the daemon or unplug. Worth documenting for

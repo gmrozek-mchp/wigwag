@@ -66,6 +66,16 @@ struct at_step {
 	size_t (*build)(struct rnwf_at *at);
 	const char *await_aec;	/* NULL: the step is done when OK arrives */
 	uint32_t timeout_ms;
+
+	/**
+	 * What this step is for, in words, for diagnostics.
+	 *
+	 * "it failed" is nearly useless to somebody configuring a device: a wrong passphrase, an
+	 * unreachable broker and a mistyped hostname all look the same from outside. Naming the step
+	 * turns three indistinguishable failures into three different messages, which is the whole
+	 * value of `test wifi`.
+	 */
+	const char *name;
 };
 
 static size_t bld(struct rnwf_at *at, const char *fmt, ...)
@@ -218,25 +228,40 @@ static size_t step_subscribe_brightness(struct rnwf_at *at)
 }
 
 static const struct at_step connect_script[] = {
-	{ step_verbosity,	NULL,			TMO_SHORT_MS },
-	{ step_ssid,		NULL,			TMO_SHORT_MS },
-	{ step_sec,		NULL,			TMO_SHORT_MS },
-	{ step_cred,		NULL,			TMO_SHORT_MS },
-	{ step_wifi_up,		RNWF_AEC_WSTA_GOT_IP,	TMO_WIFI_MS },
-	{ step_broker_host,	NULL,			TMO_SHORT_MS },
-	{ step_broker_port,	NULL,			TMO_SHORT_MS },
-	{ step_client_id,	NULL,			TMO_SHORT_MS },
-	{ step_username,	NULL,			TMO_SHORT_MS },
-	{ step_password,	NULL,			TMO_SHORT_MS },
-	{ step_keep_alive,	NULL,			TMO_SHORT_MS },
-	{ step_lwt,		NULL,			TMO_SHORT_MS },
-	{ step_mqtt_connect,	RNWF_AEC_MQTT_CONNACK,	TMO_MQTT_MS },
-	{ step_subscribe,	NULL,			TMO_SHORT_MS },
-	{ step_subscribe_host,	NULL,			TMO_SHORT_MS },
-	{ step_subscribe_brightness, NULL,		TMO_SHORT_MS },
+	{ step_verbosity,	NULL,			TMO_SHORT_MS,	"module responding" },
+	{ step_ssid,		NULL,			TMO_SHORT_MS,	"set ssid" },
+	{ step_sec,		NULL,			TMO_SHORT_MS,	"set security type" },
+	{ step_cred,		NULL,			TMO_SHORT_MS,	"set passphrase" },
+	{ step_wifi_up,		RNWF_AEC_WSTA_GOT_IP,	TMO_WIFI_MS,	"associate and get an IP" },
+	{ step_broker_host,	NULL,			TMO_SHORT_MS,	"set broker host" },
+	{ step_broker_port,	NULL,			TMO_SHORT_MS,	"set broker port" },
+	{ step_client_id,	NULL,			TMO_SHORT_MS,	"set client id" },
+	{ step_username,	NULL,			TMO_SHORT_MS,	"set broker username" },
+	{ step_password,	NULL,			TMO_SHORT_MS,	"set broker password" },
+	{ step_keep_alive,	NULL,			TMO_SHORT_MS,	"set keep-alive" },
+	{ step_lwt,		NULL,			TMO_SHORT_MS,	"register last will" },
+	{ step_mqtt_connect,	RNWF_AEC_MQTT_CONNACK,	TMO_MQTT_MS,	"resolve, connect and CONNACK" },
+	{ step_subscribe,	NULL,			TMO_SHORT_MS,	"subscribe to state" },
+	{ step_subscribe_host,	NULL,			TMO_SHORT_MS,	"subscribe to host_online" },
+	{ step_subscribe_brightness, NULL,		TMO_SHORT_MS,	"subscribe to brightness" },
 };
 
 #define SCRIPT_LEN ((uint8_t)(sizeof(connect_script) / sizeof(connect_script[0])))
+
+const char *rnwf_at_step_str(const struct rnwf_at *at)
+{
+	if (at->state == RNWF_AT_ST_READY) {
+		return "connected";
+	}
+	if (at->state == RNWF_AT_ST_RESETTING) {
+		return "resetting the module";
+	}
+	if (at->step >= SCRIPT_LEN) {
+		return "?";
+	}
+
+	return connect_script[at->step].name;
+}
 
 /* ------------------------------------------------------------- transitions */
 
@@ -267,7 +292,7 @@ static void enter_backoff(struct rnwf_at *at)
 
 	/*
 	 * Rule 4 / ADR-0007: the moment the link is not trusted, say so. The lamps must go to the
-	 * amber flicker rather than keep displaying a state nothing is confirming.
+	 * fail-visible wigwag rather than keep displaying a state nothing is confirming.
 	 */
 	if (was_linked) {
 		notify_link(at, false);

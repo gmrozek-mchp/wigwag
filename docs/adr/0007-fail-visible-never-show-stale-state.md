@@ -2,6 +2,11 @@
 
 - **Status:** Accepted
 - **Date:** 2026-08-14
+- **Note added 2026-08-15:** the decision here stands unchanged, but this document calls the
+  fail-visible pattern an *amber flicker*, and **there is no amber lamp** — the device has three
+  discrete red, yellow and green lamps, which cannot blend a colour. The pattern is now a red/yellow
+  **wigwag** at 1 Hz, the railroad crossing signal this project is named after (D121). The wording
+  below is left as written rather than edited, per Rule 2.
 
 ## Context
 

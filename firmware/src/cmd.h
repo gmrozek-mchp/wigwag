@@ -62,6 +62,15 @@ enum cmd_kind {
 	 * goodbye.
 	 */
 	CMD_HOST,
+
+	/**
+	 * `test wifi` — try the stored Wi-Fi and broker settings *without* committing to them.
+	 *
+	 * Exists because the alternative is `set transport wifi`, `save`, `reboot`, and then staring at a
+	 * device that will not say why it failed. This runs the connect script on a wired device, reports
+	 * which step it reached, and leaves the transport setting and the lamps alone.
+	 */
+	CMD_TEST_WIFI,
 };
 
 /**
@@ -127,7 +136,7 @@ bool cmd_parse(char *line, struct cmd *out);
  * transport share one wire (ADR-0018), so somebody configuring Wi-Fi over USB is typing on the same
  * line a daemon would use. Treating every command as host activity made the wired transport claim the
  * device mid-configuration, and then — ten seconds after the person stopped typing to read something —
- * drop it and show the amber fail-visible pattern on a device whose Wi-Fi was perfectly healthy. That
+ * drop it and show the fail-visible wigwag on a device whose Wi-Fi was perfectly healthy. That
  * is Rule 4 firing when nothing is wrong, which is the one direction it must not fire.
  *
  * `set`, `show`, `save`, `clear`, `gain`, `brightness`, `echo`, `help` and `reboot` are all things a
@@ -137,7 +146,7 @@ bool cmd_parse(char *line, struct cmd *out);
  * **`host off` is excluded too**, which is why this takes the whole command rather than just the kind.
  * It is the same verb as `host on` but means the opposite, and treating it as a claim was a real bug:
  * a bare `host off` on a device that had never seen a host would latch it to USB (D117) *and*
- * immediately distrust it, leaving the lamps amber and Wi-Fi ignored until a reset. A message saying
+ * immediately distrust it, leaving the lamps wigwagging and Wi-Fi ignored until a reset. A message saying
  * "there is no host" must not be able to claim the device.
  */
 bool cmd_is_host_activity(const struct cmd *c);

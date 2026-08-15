@@ -117,71 +117,109 @@ static void test_wait_escalation_is_relative_to_the_state(void)
 	CHECK(f.level[LAMP_RED] == 255, "a fresh WAIT on an old device blinked immediately");
 }
 
-static void test_error_alternates_red_and_yellow(void)
+static void test_error_is_both_lamps_steady(void)
 {
-	bool saw_red = false, saw_yellow = false;
+	/*
+	 * Two lamps at once happens in no other state, and being static it cannot be confused with the
+	 * fail-visible wigwag or with WAIT's slow red blink — the pair that matters most, since one
+	 * means "it needs you" and this means "it already died".
+	 */
 	uint32_t t;
 
-	for (t = 0; t < LAMP_ERROR_PERIOD_MS * 2U; t += 10) {
+	for (t = 0; t < 5000; t += 10) {
 		struct lamp_frame f = lamp_render(WIGWAG_ERROR, true, t, 0);
 
-		if (f.level[LAMP_RED] > 0) {
-			saw_red = true;
-			CHECK(f.level[LAMP_YELLOW] == 0, "ERROR lit both at t=%u", t);
-		}
-		if (f.level[LAMP_YELLOW] > 0) {
-			saw_yellow = true;
-		}
+		CHECK(f.level[LAMP_RED] == 255, "ERROR red not full at t=%u (%u)", t, f.level[LAMP_RED]);
+		CHECK(f.level[LAMP_YELLOW] == 255, "ERROR yellow not full at t=%u (%u)", t,
+		      f.level[LAMP_YELLOW]);
 		CHECK(f.level[LAMP_GREEN] == 0, "ERROR lit green at t=%u", t);
 	}
-
-	CHECK(saw_red && saw_yellow, "ERROR did not alternate (red %d yellow %d)", saw_red,
-	      saw_yellow);
 }
 
 /* ------------------------------------------------------------ fail-visible */
 
 static void test_unlinked_overrides_every_state(void)
 {
+	/*
+	 * Compared over a cycle rather than frame by frame, deliberately.
+	 *
+	 * A two-lamp alternation shows exactly one lamp at any given instant, so a single frame of the
+	 * wigwag's red half is identical to steady WAIT, and its yellow half to BUSY at the peak of the
+	 * breathe. That is inherent to alternating and not a fault: what distinguishes fail-visible is
+	 * *motion*, over a second, which is how anyone actually looks at a lamp on a desk. The previous
+	 * pattern kept both lamps lit at irregular levels and so differed at every instant — the price
+	 * was that it read as two lamps flickering at random rather than as a signal.
+	 */
 	const enum wigwag_state states[] = { WIGWAG_IDLE, WIGWAG_BUSY, WIGWAG_WAIT, WIGWAG_ERROR };
 	size_t i;
 
 	for (i = 0; i < sizeof(states) / sizeof(states[0]); i++) {
-		struct lamp_frame f = lamp_render(states[i], false, 1000, 0);
-		struct lamp_frame trusted = lamp_render(states[i], true, 1000, 0);
+		bool differs = false;
+		uint32_t t;
 
-		CHECK(f.level[LAMP_GREEN] == 0,
-		      "green lit while unlinked in %s", wigwag_state_str(states[i]));
-		CHECK(memcmp(&f, &trusted, sizeof(f)) != 0 || states[i] == WIGWAG_ERROR,
-		      "unlinked looks identical to %s", wigwag_state_str(states[i]));
+		for (t = 0; t < LAMP_WIGWAG_PERIOD_MS * 2U; t += 10) {
+			struct lamp_frame f = lamp_render(states[i], false, t, 0);
+			struct lamp_frame trusted = lamp_render(states[i], true, t, 0);
+
+			CHECK(f.level[LAMP_GREEN] == 0, "green lit while unlinked in %s at t=%u",
+			      wigwag_state_str(states[i]), t);
+
+			if (memcmp(&f, &trusted, sizeof(f)) != 0) {
+				differs = true;
+			}
+		}
+
+		CHECK(differs, "unlinked is indistinguishable from %s across a whole cycle",
+		      wigwag_state_str(states[i]));
 	}
 }
 
-static void test_unlinked_never_looks_idle(void)
+static void test_unlinked_wigwags_between_red_and_yellow(void)
 {
 	/*
-	 * The specific lie to prevent: a blind device must never resemble "everything is fine".
-	 * Green stays off throughout, and the pattern must not be steady.
+	 * The specific lie to prevent: a device that cannot confirm anything must never resemble
+	 * "everything is fine". Green stays off throughout, exactly one of red/yellow is lit at any
+	 * moment, and both are seen across a cycle.
 	 */
-	uint8_t first_y;
-	bool changed = false;
+	bool saw_red = false, saw_yellow = false;
 	uint32_t t;
 
-	first_y = lamp_render(WIGWAG_IDLE, false, 0, 0).level[LAMP_YELLOW];
-
-	for (t = 0; t < 2000; t += LAMP_FLICKER_STEP_MS) {
+	for (t = 0; t < LAMP_WIGWAG_PERIOD_MS * 3U; t += 10) {
 		struct lamp_frame f = lamp_render(WIGWAG_IDLE, false, t, 0);
 
 		CHECK(f.level[LAMP_GREEN] == 0, "green lit while unlinked at t=%u", t);
-		if (f.level[LAMP_YELLOW] != first_y) {
-			changed = true;
+
+		/* Exactly one, never both — that is what separates it from ERROR. */
+		CHECK((f.level[LAMP_RED] > 0) != (f.level[LAMP_YELLOW] > 0),
+		      "wigwag lit %s at t=%u",
+		      (f.level[LAMP_RED] > 0) ? "both" : "neither", t);
+
+		if (f.level[LAMP_RED] > 0) {
+			saw_red = true;
+		}
+		if (f.level[LAMP_YELLOW] > 0) {
+			saw_yellow = true;
 		}
 	}
 
-	CHECK(changed, "the fail-visible pattern is static");
+	CHECK(saw_red && saw_yellow, "did not alternate (red %d yellow %d)", saw_red, saw_yellow);
 }
 
-static void test_flicker_is_not_the_busy_breathe(void)
+static void test_wigwag_is_never_mistakable_for_error(void)
+{
+	/* Different meanings, so they must not be able to look the same at any instant. */
+	uint32_t t;
+
+	for (t = 0; t < LAMP_WIGWAG_PERIOD_MS * 2U; t += 10) {
+		struct lamp_frame fail = lamp_render(WIGWAG_IDLE, false, t, 0);
+		struct lamp_frame err = lamp_render(WIGWAG_ERROR, true, t, 0);
+
+		CHECK(memcmp(&fail, &err, sizeof(fail)) != 0,
+		      "fail-visible and ERROR identical at t=%u", t);
+	}
+}
+
+static void test_wigwag_is_not_the_busy_breathe(void)
 {
 	/* If the flicker resembled BUSY it would read as "working", which is a lie, not a warning. */
 	int same = 0;
@@ -431,10 +469,11 @@ int main(void)
 	test_busy_breathes_yellow_only();
 	test_wait_is_steady_red_then_blinks();
 	test_wait_escalation_is_relative_to_the_state();
-	test_error_alternates_red_and_yellow();
+	test_error_is_both_lamps_steady();
 	test_unlinked_overrides_every_state();
-	test_unlinked_never_looks_idle();
-	test_flicker_is_not_the_busy_breathe();
+	test_unlinked_wigwags_between_red_and_yellow();
+	test_wigwag_is_never_mistakable_for_error();
+	test_wigwag_is_not_the_busy_breathe();
 	test_brightness_is_perceptual_not_linear_in_duty();
 	test_gain_calibrates_per_lamp();
 	test_brightness_zero_darkens_reporting_lamps();

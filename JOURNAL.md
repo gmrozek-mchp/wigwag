@@ -7,6 +7,90 @@ Entries record what was done, why, and — importantly — what was tried and re
 
 ---
 
+## 2026-08-15 — a Wi-Fi test command, and the amber lamp that never existed
+
+**Done** — `test wifi`, and the fail-visible pattern replaced. D121, D122.
+
+### There is no amber lamp
+
+Called out on wording, and it was worse than wording. The fail-visible pattern was literally trying to
+*blend* an amber colour:
+
+```c
+static const uint8_t amber_y[] = { 255, 40, 180, 20, 90, 255, 10, 140 };
+static const uint8_t amber_r[] = { 60, 200, 30, 255, 15, 120, 220, 45 };
+```
+
+Both lamps lit simultaneously at irregular levels, stepping every 70 ms. **Three discrete, physically
+separated lamps cannot mix a colour** — on real hardware that reads as two lamps flickering at random,
+not as a signal. The term had propagated into 21 files including CLAUDE.md's Rule 4.
+
+It is now a **wigwag**: red and yellow alternating at 1 Hz, one at a time — the railroad crossing signal
+this device is named after, which is a better fit than anything I would have invented.
+
+### Which forced a second change, and a real trade-off
+
+`ERROR` *also* alternated red and yellow, at 4 Hz. So a clean wigwag would have collided with it, and
+they mean very different things. Asked what `ERROR` meant and got the answer from `CONTEXT.md` — "the
+turn died (API error, rate limit)", set by the `StopFailure` hook. So it is a *work* outcome, one of four
+answers to "what is the session doing", while fail-visible is a *device* condition.
+
+That settled it: the alarming, never-otherwise-seen pattern belongs to the device condition, and `ERROR`
+should sit in the same visual family as its siblings. Every other state lights exactly one lamp, which
+left an unused percept — **both lamps steady**. Unique, static, and not confusable with `WAIT`'s slow red
+blink, which is the pair that matters most since one means "it needs you" and the other "it already
+died".
+
+**The trade-off, which the tests found rather than me.** A two-lamp alternation shows exactly *one* lamp
+at any instant, so a single frame of the wigwag's red half is identical to steady `WAIT`, and its yellow
+half to `BUSY` at the peak of the breathe. The old blend differed at every instant; the wigwag only
+differs *over time*. That is inherent to alternating, and fine for a human looking at a desk lamp for a
+second — but it is a genuine weakening of the instantaneous guarantee and it is written into the test
+that now compares whole cycles rather than frames.
+
+A related discovery: the old test had an exemption, `|| states[i] == WIGWAG_ERROR`, excusing the case
+where fail-visible and `ERROR` looked identical. That exemption *was* the collision, sitting in the
+suite documenting a known ambiguity. It is gone, and the assertion is now unconditional.
+
+ADR-0007's decision is unchanged and its text is left as written (Rule 2); a dated note at the top
+records that the pattern it calls an amber flicker is now the wigwag. `JOURNAL.md` is untouched — those
+entries were accurate about the code at the time, and rewriting history to match present terminology
+would be the wrong kind of tidy.
+
+### `test wifi`
+
+The gap it fills: previously, testing Wi-Fi meant `set transport wifi`, `save`, `reboot`, and then
+looking at a device that would not say why it failed. Now the connect script runs on a still-wired
+device, narrating each step, leaving the transport setting and the lamps alone.
+
+Naming the steps is the whole value. `rnwf_at.c`'s script table gained a `name` per step, so a wrong
+passphrase fails at *associate and get an IP*, a wrong broker at *resolve, connect and CONNACK*, and a
+miswired module at *module responding* — three problems that were previously one indistinguishable
+"it failed". Verified both ways on hardware:
+
+```
+test: PASS — associated, broker reachable, subscribed (261 ms)
+test: FAIL at "resolve, connect and CONNACK" — the module rejected it
+```
+
+Two design points worth keeping:
+
+- **Asynchronous, advanced by the service loop.** A synchronous test would block for tens of seconds —
+  the script allows 30 s to associate alone — starving the watchdog's 500 ms budget and rebooting the
+  device mid-test (ADR-0016). It also keeps the console responsive.
+- **States arriving mid-test are ignored, and say so.** The module ends up connected and subscribed, so
+  retained states do arrive; applying them would be exactly the substitution ADR-0022 prevents. The
+  hardware run shows it working: `wigwag: state BUSY` followed by
+  `(ignored: wifi does not own the lamps)`. A diagnostic must not change the display.
+
+**Measured** — flash 35 524 B (57.82 %), RAM 5 264 B (64.26 %). The step names and the test cost ~1.8 KB
+of flash and 16 bytes of RAM.
+
+**Tests** — 11 144 firmware checks (lamp alone went 1 438 → 4 428, mostly the cycle-comparison sweeps),
+110 host tests.
+
+---
+
 ## 2026-08-15 — the transport becomes a setting, and the session's documentation is squared up
 
 **Done** — **ADR-0022**, D119/D120. Transport selection is now a stored setting; ADR-0021 is superseded

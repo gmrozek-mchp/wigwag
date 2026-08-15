@@ -105,7 +105,7 @@ same information safely, one boot later.
 
 **Benefits**
 - The last gap in fail-visible is closed. A wedge in either context now produces a reboot and an
-  honest amber flicker on the way back up, instead of a confident stale display.
+  honest fail-visible wigwag on the way back up, instead of a confident stale display.
 - The failure is diagnosable without a debugger: a named stale task before the reset, `RESET BY
   WATCHDOG` after it.
 - D81's open question is answered. The watchdog was the one item on the AT loop's "revisit when"

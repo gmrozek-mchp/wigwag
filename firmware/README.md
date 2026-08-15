@@ -238,6 +238,7 @@ complete set — the device's own `help` prints the same list.
 | `gain green\|yellow\|red <0-255>` | per-lamp calibration, applies immediately, persists on `save` |
 | `echo on\|off` | stop echoing input — what a host program wants |
 | `host on\|off` | host liveness. `on` must repeat within 10 s to keep the wire trusted; `off` is an orderly goodbye |
+| `test wifi` | try the stored Wi-Fi and broker settings **without committing to them** — see below |
 
 Keys for `set`:
 
@@ -266,6 +267,28 @@ Things worth knowing:
 
 Line editing is deliberately minimal, and `lineedit.c` is isolated behind a "bytes in, lines out"
 interface so a richer CLI could replace that one file if it ever earned the RAM.
+
+### Testing Wi-Fi before committing to it
+
+`test wifi` runs the real connect script against the stored settings on a device that is still wired,
+narrating each step, then leaves the transport setting and the lamps exactly as they were:
+
+```
+test: trying ssid "my-network" broker mqtt.example.lan:1883
+test:   associate and get an IP
+test:   resolve, connect and CONNACK
+test: FAIL at "resolve, connect and CONNACK" — the module rejected it
+test:   check the setting that step configures, then try again
+```
+
+Naming the step is the whole point: a wrong passphrase fails at *associate and get an IP*, a wrong
+broker at *resolve, connect and CONNACK*, and a miswired module at *module responding*. Those are three
+different problems that otherwise look identical.
+
+It brings the module up on demand — a wired device never starts it otherwise (D118) — and runs
+asynchronously, so the console stays responsive and the watchdog keeps being fed rather than a
+30-second command starving it. States arriving from the broker during a test are **ignored**, and say
+so, because a diagnostic must not change the display.
 
 ### Which transport owns the lamps
 
