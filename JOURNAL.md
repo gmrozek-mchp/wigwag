@@ -7,6 +7,108 @@ Entries record what was done, why, and — importantly — what was tried and re
 
 ---
 
+## 2026-08-17 — the documentation catches up with the device it describes
+
+**Done** — a full pass over `README.md`, `CONTEXT.md`, `docs/PLAN.md`, `host/README.md`,
+`firmware/README.md` and `CLAUDE.md`. No code changed. No new ADR: nothing here is a decision, it
+is the docs agreeing with decisions already made (ADR-0019, ADR-0020, ADR-0022, D121–D123).
+
+The headline change is that **USB is described as the default transport everywhere**, which it has
+been since D120 but which no top-level document said. `README.md` still opened with "Wi-Fi
+connected", the architecture diagram had a single MQTT path, and every quick-start began with
+installing a broker — the one thing a wired device does not need.
+
+### Two documents were still publishing the D123 bug as instructions
+
+`host/README.md` §8 and `docs/PLAN.md`'s hook table both listed
+
+```
+"matcher": "permission_prompt|idle_prompt|agent_needs_input"
+```
+
+as the wiring to install. That is the matcher that never matched anything and kept `WAIT` dead from
+Phase 1 to 2026-08-15. `settings.hooks.json` was fixed two days ago; the two files telling people how
+to copy it were not, so anyone following either would have reproduced the bug. Both now list one
+matcher per notification type, name `PermissionRequest` and `Elicitation`, and say plainly that an
+older copy of the block should be re-copied. The `WAIT`-has-no-exit-edge asymmetry (D129/D130) is
+documented where a user meets it, in host troubleshooting, rather than only in the register.
+
+**Worth generalising:** a document that instructs is code. It was reviewed as prose and so escaped
+the fix that touched the thing it describes.
+
+### CLAUDE.md named a file that does not exist
+
+Rule 3 — "never break Claude Code" — protected `host/hooks/cg-notify`. The hook client has been
+`wg-notify` since Phase 1, and the same section listed `/tmp/wigwag.sock` as the transport, which
+ADR-0010 replaced with loopback UDP before any of it was written. Standing instructions that name
+the wrong file are worse than silence, since they send a future session looking for it. Both fixed,
+and Rule 3 gained the D123 lesson: when hook *wiring* changes, drive a real session, because no test
+in either suite covers that seam.
+
+### Numbers were re-measured rather than copied
+
+Every count in the docs was stale or unverified, so each was taken from a command rather than from
+the journal:
+
+| Claim | Was | Is |
+|---|---|---|
+| host tests | 93 | **110** (`uv run pytest`) |
+| firmware checks | not stated | **11 144**, 0 failures (`make -C firmware/tests`) |
+| RAM | 4 440 B / 54.2 % | **5 267 B / 64.3 %** (`west build -t ram_report`) |
+| flash | 19 708 B | **35 516 B**, 57.8 % of the 60 KB app region (`rom_report`) |
+
+The footprint table in `firmware/README.md` had stopped four milestones back, at "three lamps + link
+supervision", and its commentary still called the budget "today's 47 %". It now carries every
+milestone through `test wifi`, with the growth attributed — console and NVS ~768 B of which 302 B is
+NVS's string cache (D108), `test wifi` ~1.8 KB of flash and under 20 B of RAM.
+
+One small discrepancy, recorded rather than smoothed over: today's build measures **5 267 B against
+the 5 264 B** the 2026-08-15 entry records for the same milestone, and 35 516 against 35 524. The
+tree is the committed one with no `credentials.conf` merged. Three bytes is not worth chasing, but a
+future session comparing the two should know they were measured from different working trees.
+
+### Everything else that was wrong
+
+- `README.md`'s Status said "Early development — Phase 0 (documentation and workflow)", three phases
+  behind. It now says both phases are complete bar module bring-up, and is careful that the Wi-Fi
+  path has only been proven against `sim/fake_rnwf02.py` — not the module.
+- `README.md`'s Layout listed `hardware/` and an OpenSCAD model as though they existed. `enclosure/`
+  is an empty directory and `hardware/` does not exist on `main` at all.
+- `docs/PLAN.md`'s architecture diagram still had the *original plan's* transport — `nc`, an AF_UNIX
+  datagram and `/tmp/wigwag.sock` — all three superseded by ADR-0010 before Phase 1 shipped. Its repo
+  layout listed `src/{main,rnwf_at,lamp,button,link}.c` and `prj_release.conf`, missing the eleven
+  source files added since and naming one that was never created.
+- D16 ("nothing committed yet") and D17 ("open") were both still stale in the register; phase items
+  13 and 17 described work as outstanding that hardware has since confirmed.
+- `CONTEXT.md` defined **link condition** as broker-only and **commissioning** as compile-time
+  Kconfig plus future SoftAP — both pre-console framings. The vocabulary gained `transport`,
+  `console`, `stored setting` and `bridge`, which had been in daily use in code and journal for three
+  days without ever being defined.
+
+**Verified**
+- 110 host tests pass, 11 144 firmware checks pass, 0 failures — run, not recalled.
+- `ram_report` / `rom_report` re-run against `build/` on the committed tree: 5 267 B, 35 516 B.
+- Hook table checked against `host/settings.hooks.json` by dumping every event, matcher and argument
+  list, not by reading the file for gist.
+- Exactly one `K_THREAD_DEFINE`/`k_thread_create` in `firmware/src` (the lamp renderer), which is
+  what licenses the claim that the AT loop and link supervision run on main (D81).
+- `docs/upstreaming-to-zephyr.md` and `docs/usb-serial-and-bootloader.md` re-read and found already
+  current from the 2026-08-15 sweep; no edits.
+
+**Open**
+- **`phase3/pcb-routing` has diverged, and this pass will conflict with it.** That branch is 8
+  commits ahead with its own edits to `docs/PLAN.md` (163 lines) and `CONTEXT.md`, plus ADR-0023 and
+  ADR-0024, none of it on `main`. Two of its `PLAN.md` hunks land in regions edited today — the
+  footprint plan and the Phase 0 loose-end line. Whoever merges reconciles both; `main`'s "22 ADRs"
+  and its "`hardware/` lands in Phase 3" note both become wrong the moment it does.
+- Q5 is unchanged and now referenced from user-facing docs, so a resolution has one more place to
+  update.
+
+**Next**
+- Merge or rebase `phase3/pcb-routing` before either side's documentation drifts further.
+
+---
+
 ## 2026-08-15 — WAIT had never once fired, and the reason it can get stuck
 
 **Done** — hook wiring fixed in `.claude/settings.json` and `host/settings.hooks.json`. D123, D129,

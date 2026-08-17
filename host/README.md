@@ -1,12 +1,19 @@
 # wigwag host software
 
-The computer side: a daemon that aggregates AI session states and publishes them over
-MQTT, a CLI, and the hook client Claude Code executes.
+The computer side: a daemon that aggregates AI session states and publishes them to the device, a
+CLI, and the hook client Claude Code executes.
 
 ```
-Claude Code hooks ──► wg-notify ──UDP──► wigwagd ──MQTT──► broker ──► the light
-                     (~3 ms, bash)      (aggregate)       (retained)
+Claude Code hooks ──► wg-notify ──UDP──► wigwagd ──┬── serial ─────────────────► the light
+                     (~3 ms, bash)     (aggregate) │       (default, no broker)
+                                                   └── MQTT ──► broker ──Wi-Fi──► the light
+                                                                (retained)
 ```
+
+**One or the other, never both.** Set a serial port and the daemon talks to a device on the wire;
+leave it unset and it publishes to a broker. The device makes the matching choice with its own
+stored setting, and defaults to the wire (ADR-0022) — so the serial path is the one that works with
+no configuration on either side.
 
 Runs on macOS, Linux and Windows. Everything below is written for all three.
 
@@ -19,11 +26,11 @@ Runs on macOS, Linux and Windows. Everything below is written for all three.
 ## Contents
 
 1. [Prerequisites](#1-prerequisites)
-2. [Install](#2-install)
+2. [Install](#2-install) — including [the wired transport](#the-wired-transport-no-wi-fi-no-broker--the-default), which is the default
 3. [Start everything (the short version)](#3-start-everything-the-short-version)
-4. [The MQTT broker](#4-the-mqtt-broker) — install, run, and the local-only trap
-5. [Run the broker as a service](#5-run-the-broker-as-a-service)
-6. [Connect to a remote broker](#6-connect-to-a-remote-broker)
+4. [The MQTT broker](#4-the-mqtt-broker) — install, run, and the local-only trap · *Wi-Fi only*
+5. [Run the broker as a service](#5-run-the-broker-as-a-service) · *Wi-Fi only*
+6. [Connect to a remote broker](#6-connect-to-a-remote-broker) · *Wi-Fi only*
 7. [Run wigwagd automatically at login](#7-run-wigwagd-automatically-at-login)
 8. [Install the Claude Code hooks](#8-install-the-claude-code-hooks)
 9. [Configuration reference](#9-configuration-reference)
@@ -50,12 +57,13 @@ Verify: `uv --version`
 git clone <repo> wigwag
 cd wigwag/host
 uv sync          # creates .venv, installs paho-mqtt + pytest
-uv run pytest    # 93 tests, needs no broker and no network
+uv run pytest    # 110 tests, needs no broker, no network and no device
 ```
 
-### The wired transport (no Wi-Fi, no broker)
+### The wired transport (no Wi-Fi, no broker) — the default
 
-If the device is plugged into this machine, skip MQTT entirely:
+If the device is plugged into this machine, skip MQTT entirely. A fresh device expects exactly
+this, so there is nothing to configure on either side:
 
 ```sh
 uv sync --extra serial                     # adds pyserial
@@ -88,8 +96,8 @@ are identical.
 
 ## 3. Start everything (the short version)
 
-Three things run: a **broker**, the **daemon**, and (optionally) the **hooks** that feed
-it. To see it working right now, with no broker at all:
+What runs depends on the transport. **On the wire: the daemon and the hooks, nothing else.** Over
+Wi-Fi, add a **broker**. To see it working right now, with neither a broker nor a device:
 
 ```sh
 cd host
@@ -103,7 +111,13 @@ uv run wigwag clear --id ci
 `--dry-run` needs no broker and no MQTT dependency, so it is the fastest way to confirm
 the plumbing before dealing with a broker.
 
-With a broker, the full runbook is:
+With a device on the wire, the whole runbook is one command:
+
+```sh
+cd host && WIGWAG_SERIAL_PORT=auto uv run wigwagd -v
+```
+
+Over Wi-Fi it is three:
 
 ```sh
 # 1. broker  (see §4 — a bare `mosquitto` is local-only and will not reach the device)
@@ -116,9 +130,12 @@ cd host && uv run wigwagd -v
 mosquitto_sub -h localhost -t 'wigwag/#' -v
 ```
 
-Then install the hooks (§8) so your sessions drive it automatically.
+Either way, install the hooks (§8) so your sessions drive it automatically.
 
 ## 4. The MQTT broker
+
+**Skip this section entirely if the device is on the wire** — sections 4 to 6 are for the Wi-Fi
+transport only.
 
 ### Install
 
@@ -387,10 +404,26 @@ Merge the `hooks` object from [`settings.hooks.json`](settings.hooks.json) into 
 | `SessionStart` | `startup\|resume\|clear` | `IDLE` |
 | `UserPromptSubmit` | — | `BUSY` |
 | `PreToolUse` / `PostToolUse` | `*` | `BUSY` (heartbeat, refreshes the TTL) |
-| `Notification` | `permission_prompt\|idle_prompt\|agent_needs_input` | **`WAIT`** |
+| `PermissionRequest` | — | **`WAIT`** |
+| `Elicitation` | `*` | **`WAIT`** |
+| `ElicitationResult` | `*` | `BUSY` |
+| `Notification` | `permission_prompt` | **`WAIT`** |
+| `Notification` | `idle_prompt` | **`WAIT`** |
+| `Notification` | `agent_needs_input` | **`WAIT`** |
 | `Stop` | — | `IDLE` |
 | `StopFailure` | `*` | `ERROR` |
 | `SessionEnd` | `*` | drops the session |
+
+**Three separate `Notification` entries, not one combined matcher.** This file used to carry
+`permission_prompt|idle_prompt|agent_needs_input` as a single matcher, and it matched *nothing* —
+`Notification` matchers filter on the notification type, and no type contains a pipe. `WAIT`, the
+one state that asks for your attention, therefore never fired at all until 2026-08-15. If you copied
+an older version of this block, re-copy it.
+
+**A `WAIT` will not always clear promptly.** No hook fires when you reject or interrupt a tool call
+(`PermissionDenied` covers only auto-mode denials), so a `WAIT` from `PermissionRequest` clears on
+your next prompt or when the session TTL expires — see Q5 in `docs/PLAN.md`. `Elicitation` is
+better off: `ElicitationResult` is a real exit edge.
 
 Works identically in the VS Code extension and the terminal — hooks are a CLI-level
 feature and the extension bundles the CLI.
@@ -435,6 +468,8 @@ effect with `uv run wigwag config`.
 | `WIGWAG_CONFIG` | config file location |
 | `WIGWAG_BROKER_HOST` / `_PORT` / `_TLS` / `_CA_CERT` | broker connection |
 | `WIGWAG_MQTT_USERNAME` / `WIGWAG_MQTT_PASSWORD` | credentials |
+| `WIGWAG_SERIAL_PORT` | **selects the wired transport** instead of MQTT. A device path, or `auto`. Empty (the default) means publish to a broker |
+| `WIGWAG_SERIAL_BAUD` | wire speed, default 115200 |
 | `WIGWAG_TOPIC_PREFIX` | topic prefix |
 | `WIGWAG_LISTEN_PORT` | hook→daemon UDP port (default 9410) |
 | `WIGWAG_SESSION_TTL` | session expiry seconds (default 900) |
@@ -480,8 +515,13 @@ is not working and the device will come up blank.
 | Device connects then drops repeatedly | two clients sharing one `client_id`; set a distinct one |
 | `paho-mqtt is not installed` | run `uv sync`, or use `--dry-run` |
 | Broker refuses the daemon | `allow_anonymous false` with no credentials — set `WIGWAG_MQTT_USERNAME`/`_PASSWORD` |
-| Lamps wigwag red/yellow | device cannot reach the broker for >10 s — working as designed (ADR-0007) |
+| Lamps wigwag red/yellow | the configured transport has been silent for >10 s — no broker, or no `host on` on the wire. Working as designed (ADR-0007) |
 | Nothing after a broker restart | add `persistence true` so retained messages survive |
+| `pyserial is not installed` | `uv sync --extra serial` |
+| `no MCP2221A found (looked for USB 04d8:00dd)` | not plugged in, or a device with a customised USB identity — name the port explicitly |
+| `found 2 MCP2221A devices` | two candidates, so discovery refuses to guess (D115). Set `WIGWAG_SERIAL_PORT` to one of them |
+| Serial daemon runs, lamps never change | the device's `transport` is `wifi`. `-vv` shows it saying so; `set transport usb`, `save`, `reboot` |
+| Lamps stuck red long after you answered | no hook fires for a rejected or interrupted tool call (Q5). `wigwag clear --id <session>` |
 
 The hook client is deliberately silent and always exits 0, so it will never tell you it
 failed. To debug it, run it by hand:
@@ -497,9 +537,10 @@ uv run wigwag status        # should now show session "test" in WAIT
 |---|---|
 | `wigwagd/state.py` | states and aggregation — pure, no I/O, clock injected |
 | `wigwagd/protocol.py` | wire format; parsing is total and never raises |
-| `wigwagd/config.py` | TOML + env, TLS policy |
+| `wigwagd/config.py` | TOML + env, TLS policy, serial port selection |
 | `wigwagd/listener.py` | loopback UDP receiver |
-| `wigwagd/publisher.py` | MQTT via paho, behind an interface with a null impl |
+| `wigwagd/publisher.py` | the publishers behind one interface: MQTT via paho, `SerialPublisher` for the wire, and a null impl for `--dry-run` |
+| `wigwagd/paths.py` | per-platform config, runtime and status paths |
 | `wigwagd/daemon.py` | wiring, coalescing, expiry |
 | `wigwagd/cli.py` | the `wigwag` command |
 | `hooks/wg-notify` | the hook client — shell + bash `/dev/udp`, ~3 ms |

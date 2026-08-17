@@ -38,25 +38,40 @@ two lamps but holds them both steady, so the two cannot be confused.
   wedge the light. Expiry is not a state change; the session simply stops voting.
 - **heartbeat** — a repeated `BUSY` report (from tool-use hooks) whose purpose is refreshing the
   TTL, not changing the state.
+- **transport** — the carrier that brings state to the device: `usb` (the wire) or `wifi` (the
+  broker). Exactly one owns the lamps, chosen by a **stored setting** on the device, never by
+  anything either side detects (ADR-0022). Defaults to `usb`, the one needing no configuration.
 - **link condition** — whether the device currently trusts what it is displaying.
-  `LINKED` (broker reachable) or `UNLINKED` (> 10 s without the broker). `UNLINKED` overrides
-  the lamps with the red/yellow wigwag.
+  `LINKED` or `UNLINKED` (> 10 s without evidence), where the evidence depends on the configured
+  transport: the broker being reachable over Wi-Fi, a repeated `host on` over the wire.
+  `UNLINKED` overrides the lamps with the red/yellow wigwag.
+- **console** — the device's own command line, on the same UART it prints diagnostics on. Where
+  every setting is entered and stored (ADR-0019); reached over the wire on the product and over the
+  debugger's CDC port on the dev board. Not a *transport*: a device set to `wifi` still has a
+  console.
+- **stored setting** — a value in the device's NVS partition, entered with `set` and committed with
+  `save`. Stored values beat build-time Kconfig defaults (D108), and secrets are never printed back.
+- **bridge** — the `MCP2221A` USB-serial bridge on the PCB. Carries the console, and with it the
+  wired transport, at no firmware cost (ADR-0018). PL10 itself has no USB peripheral.
 - **fail-visible** — the governing principle: when the device cannot know the state, it must
   *look* wrong rather than display a stale state confidently. See ADR-0007.
 - **producer** — anything that reports state. Today: Claude Code hooks and the CLI push API.
   The daemon cannot tell producers apart; they all speak the same wire protocol.
 - **hook client** — `host/hooks/wg-notify`, the ~3 ms shell script Claude Code executes. Uses
   bash's `/dev/udp`; no `jq`, `sed`, `nc`, Python or Node in the hook path (ADR-0010).
-- **daemon** — `wigwagd`. Owns the session table and is the only MQTT publisher of state.
+- **daemon** — `wigwagd`. Owns the session table and is the only publisher of state, over MQTT or
+  over the wire (`SerialPublisher`) — one or the other, chosen by whether a serial port is
+  configured.
 - **push API** — the generic path (`wigwag set …`) letting non-Claude producers drive the light.
 - **coalescing** — suppressing a publish when the aggregate has not meaningfully changed. Keyed
   on `state` and session count, deliberately **not** on `reason`, since `PreToolUse` and
   `PostToolUse` differ only in reason and would otherwise republish twice per tool call.
 - **footprint budget** — the 8 KB SRAM ceiling on the target part. A gated requirement measured
   with `west build -t ram_report`, not an aspiration. See ADR-0008.
-- **commissioning** — getting a device its Wi-Fi credentials *and* its broker configuration for
-  the first time. Two separate problems: the module's provisioning service handles Wi-Fi, nothing
-  yet handles the broker. v1 is compile-time; v1.1 is SoftAP provisioning. See ADR-0012.
+- **commissioning** — getting a device its transport, and if wireless its Wi-Fi credentials *and*
+  its broker configuration. Today this is the **console**: `set`, `test wifi`, `save`, `reboot`
+  (ADR-0019, D105). Kconfig now supplies only defaults, and SoftAP provisioning (ADR-0012) stays
+  planned for the phone-only case. A wired device needs no commissioning at all.
 - **provisioning mode** — the temporary state entered by long-pressing the button, in which the
   module runs as a Soft-AP and serves its provisioning service. Signalled by all three lamps
   cycling in sequence — a pattern used nowhere else, so it cannot be mistaken for `WAIT` or the

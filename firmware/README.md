@@ -2,25 +2,39 @@
 
 Zephyr application for the PIC32CM PL10 host MCU. The RNWF02 module owns Wi-Fi, TCP/IP, TLS and
 MQTT (ADR-0002), so this firmware has no networking subsystem at all — it drives three lamps over
-TCC0 PWM, reads one button, and speaks AT commands over a UART.
+TCC0 PWM, reads one button, keeps a watchdog honest, stores its settings in flash, and serves an
+interactive console on a UART.
+
+State reaches it over **one** transport, decided by a stored setting and not by anything either
+side detects: `usb` (bare `state` lines on the console UART, the default) or `wifi` (MQTT, via AT
+commands to the module). See [Which transport owns the lamps](#which-transport-owns-the-lamps) and
+ADR-0022.
 
 Target part `PIC32CM6408PL10028` (64 KB flash / **8 KB SRAM**). Development board `EV10P22A`
 (PL10 Curiosity Nano), which carries the 48-pin sibling with identical memory, so footprint
 measurements transfer directly (ADR-0008).
+
+Currently **5 267 B of RAM (64.3 % of 8 KB)** and 35 516 B of flash, with 11 144 host-side checks
+passing under plain clang (`make -C firmware/tests`).
 
 ## Layout
 
 ```
 firmware/
 ├── west.yml                              pinned, minimal manifest (ADR-0014)
-├── CMakeLists.txt  prj.conf
+├── CMakeLists.txt  prj.conf              prj_stacks.conf is the measurement-only overlay
 ├── src/main.c
 ├── src/*.c                               one subsystem per file; pure logic split from its
 │                                         Zephyr adapter (lamp/lamp_pwm, button/button_gpio,
-│                                         wdog/wdog_wdt) so the logic is host-testable
+│                                         wdog/wdog_wdt, settings/settings_store) so the logic
+│                                         is host-testable. cmd/lineedit/console are the shell,
+│                                         transport.c decides whether to believe the wire
 ├── tests/                                host unit tests, plain clang: `make -C firmware/tests`
 ├── modules/pic32cm-pl-nvmctrl/           out-of-tree flash driver for PL10's NVMCTRL (ADR-0017);
 │                                         registered via ZEPHYR_EXTRA_MODULES in CMakeLists.txt
+├── dts/bindings/                         the app-local `wigwag,lamps` binding (D91)
+├── patches/                              one local patch to the pinned tree (D73) — see its README
+├── sim/fake_rnwf02.py                    AT server + MQTT bridge, driven over a real UART
 └── boards/pic32cm_pl10_cnano.overlay     TCC0 PWM (D49), SERCOM0, WDT, RSTC, NVMCTRL, lamps, SW0
 ```
 
@@ -324,26 +338,39 @@ both the old and new SHA in `JOURNAL.md`.
 
 ## Footprint
 
-The 8 KB budget is a gated requirement, not an aspiration (ADR-0008, Rule 5). Measured for the
-D49 spike:
+The 8 KB budget is a gated requirement, not an aspiration (ADR-0008, Rule 5). Every milestone,
+from `ram_report` rather than estimated:
 
 | Build | Flash | RAM | of 8 KB |
 |---|---|---|---|
 | `samples/basic/blinky` | 12 576 B | 3 872 B | 47.3 % |
 | D49 spike (lamp only) | 14 132 B | 3 880 B | 47.4 % |
 | lamp + AT client + SERCOM0 transport | 17 816 B | 4 800 B | 58.6 % |
-| **three lamps + link supervision, ISR stack tuned** | **19 708 B** | **4 440 B** | **54.2 %** |
+| three lamps + link supervision, ISR stack tuned | 19 708 B | 4 440 B | 54.2 % |
+| + button, brightness, `wigwag/online` | 20 940 B | 4 480 B | 54.7 % |
+| + console, settings in NVS, flash driver | 33 716 B | 5 248 B | 64.1 % |
+| **+ `test wifi` with named steps** | **35 516 B** | **5 267 B** | **64.3 %** |
 
-The AT client's 920 B is attributed exactly: `at_client` (`struct rnwf_at`) 624 B, `rnwf_uart.c`
-268 B (a 256-byte receive ring plus indices), and 44 B of UART driver state for both SERCOM
-instances. The lamp renderer adds ~632 B (a 512 B thread stack plus its thread struct) and link
-supervision 32 B. RAM went *down* between those last two rows despite gaining a thread, because the
-ISR stack was tuned on measurement at the same time.
+Flash is 57.8 % of the 60 KB application region (4 KB of the part's 64 KB is the storage
+partition). **2 925 B of RAM remain.**
 
-**Almost all of it is kernel stacks, not application code.** `ram_report` attributes 3 766 B of
-3 878 B to `kernel/init.c` — `z_interrupt_stacks` 2 048 B, `z_main_stack` 1 024 B,
-`z_idle_stacks` 256 B — against 66 B for every driver combined. So the interesting number is not
-today's 47 %, it is that the three stack sizes are the entire budget and they are all tunable.
+Where the growth went, attributed rather than guessed: the AT client's 920 B is `at_client`
+(`struct rnwf_at`) 624 B, `rnwf_uart.c` 268 B (a 256-byte receive ring plus indices) and 44 B of
+UART driver state for both SERCOM instances. The lamp renderer adds ~632 B (a 512 B thread stack
+plus its thread struct) and link supervision 32 B. The console layer and NVS added ~768 B, of which
+**302 B is NVS's string cache** — unavoidable, since NVS returns copies rather than addresses into
+mapped flash (D108). `test wifi` cost ~1.8 KB of flash and under 20 B of RAM. RAM went *down*
+between rows four and three despite gaining a thread, because the ISR stack was tuned on
+measurement at the same time.
+
+The last row was re-measured on 2026-08-17 against the committed tree with no `credentials.conf`
+merged; it reads three bytes above the 5 264 B recorded in the journal for the same milestone.
+
+**Almost all of the baseline is kernel stacks, not application code.** At the D49 spike,
+`ram_report` attributed 3 766 B of 3 878 B to `kernel/init.c` — `z_interrupt_stacks` 2 048 B,
+`z_main_stack` 1 024 B, `z_idle_stacks` 256 B — against 66 B for every driver combined. That is
+still the shape of the budget today: one application thread (the lamp renderer; the AT loop and link
+supervision run on main, D81), and the stack sizes dominating everything the application declares.
 
 ### Measuring stack utilisation
 

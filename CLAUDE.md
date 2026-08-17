@@ -29,13 +29,17 @@ one `Superseded by ADR-NNNN`.
 
 ## Rule 3 — never break Claude Code
 
-`host/hooks/cg-notify` runs inside Claude Code's own hook path. It must:
+`host/hooks/wg-notify` runs inside Claude Code's own hook path. It must:
 
 - always `exit 0`, even on total failure;
 - write **nothing** to stdout — on `UserPromptSubmit` stdout is injected into Claude's
   context, and on `SessionStart` it is displayed to the user;
 - work correctly when the daemon is down and the broker is missing;
 - stay under ~10 ms. No Python, no Node, no network calls in the hook path.
+
+The wiring is as fragile as the client. A single `Notification` matcher combining three types with
+pipes matched nothing for two days, so `WAIT` never fired (D123) — when hook wiring changes, drive
+a real session and watch `wigwag status`, because no test in either suite covers that seam.
 
 A status light is a convenience. Breaking the tool it observes is never an acceptable
 trade for a nicer light.
@@ -104,11 +108,14 @@ worth upstreaming. Say which of the three layers you actually checked.
 ## Conventions
 
 - Firmware: Zephyr/Linux kernel C style, tabs, `snake_case`. One subsystem per file in
-  `firmware/src/`. Bounded buffers only — no dynamic allocation in the AT path.
-- Host: Python 3 stdlib + `paho-mqtt` for the daemon; POSIX `sh` for anything in the hook
-  path. No new runtime dependencies without an ADR.
-- Names: daemon `wigwagd`, CLI `wigwag`, hook client `wg-notify`, topics `wigwag/*`, socket
-  `/tmp/wigwag.sock`.
-- States are `IDLE`/`BUSY`/`WAIT`/`ERROR` everywhere, uppercase, no synonyms.
+  `firmware/src/`, with pure logic split from its Zephyr adapter so it unit-tests under plain
+  clang. Bounded buffers only — no dynamic allocation in the AT path.
+- Host: Python 3 stdlib + `paho-mqtt` for the daemon, `pyserial` as an optional extra for the
+  wired transport, both imported lazily; `bash` for anything in the hook path. No new runtime
+  dependencies without an ADR.
+- Names: daemon `wigwagd`, CLI `wigwag`, hook client `wg-notify`, topics `wigwag/*`,
+  hook → daemon on **loopback UDP** `127.0.0.1:9410` (not a Unix socket — ADR-0010).
+- States are `IDLE`/`BUSY`/`WAIT`/`ERROR` everywhere, uppercase, no synonyms. Transports are
+  `usb`/`wifi`, one active at a time, chosen by a stored device setting (ADR-0022).
 - Secrets live in gitignored `firmware/credentials.conf` and `host/.env`. Never commit them,
   never echo them into logs or the journal.

@@ -31,8 +31,12 @@ waiting on you — and when several sessions run at once, the one that needs you
 | _red/yellow wigwag_ | link lost — state unknown | alternating at 1 Hz, deliberately distinct |
 
 Complete project: firmware, host software, custom PCB, 3D-printed enclosure. **Microchip
-silicon is a hard requirement.** Wi-Fi, untethered. Zephyr RTOS. Custom PCB. Plus a reusable
-journaling workflow skill, established first.
+silicon is a hard requirement.** Zephyr RTOS. Plus a reusable journaling workflow skill,
+established first.
+
+Two ways to reach the device, one active at a time and chosen by a stored setting (ADR-0022):
+**USB serial by default**, because it needs no configuration at all, and **Wi-Fi** — untethered,
+via MQTT — for a device that sits away from the machine you code on.
 
 **Design goal beyond the gadget:** find out how small a Microchip part can usefully run Zephyr.
 The target is deliberately the smallest Zephyr-supported Microchip device — 28 pins, 8 KB SRAM
@@ -92,8 +96,8 @@ Recorded because the reasoning is worth keeping (→ JOURNAL entry + ADR-0001 re
 | D13 | States are `IDLE`/`BUSY`/`WAIT`/`ERROR`, uppercase everywhere | built |
 | D14 | `UNKNOWN` is a *link condition* (`LINKED`/`UNLINKED`), not a state | built |
 | D15 | Plan mirrored to `docs/PLAN.md` so it survives sessions and is diffable | built |
-| D16 | `git init` done; nothing committed yet | built |
-| D17 | Install hook block into `.claude/settings.json` | open |
+| D16 | `git init` done. **Committed from 2026-08-14**; history is on `main` with per-subsystem commits | built |
+| D17 | Install hook block into `.claude/settings.json` — journal reminder *and* the state hooks, the latter corrected on 2026-08-15 (D123) | built |
 | D43 | Project name **wigwag** — vendor-neutral, so other AI tools can be added without a rename | settled |
 
 ### Hardware
@@ -285,6 +289,14 @@ measures **1 704 B, 20.8 %**. Not adopted yet: stack sizing needs peak-usage evi
 optimism. But the 8 KB question now has a real answer — the budget is dominated by tunables, not
 by code.
 
+**Where it stands (2026-08-17):** **5 267 B of 8 192 (64.3 %)**, flash 35 516 B of 60 KB (57.8 %),
+2 925 B free. Two estimates in the table above turned out wrong in opposite directions: there is
+**one** extra thread rather than three (the AT loop runs on main, D81; link supervision folded into
+it), but the plan never budgeted for a console, an NVS string cache (302 B, D108) or a flash
+driver. The largest single line item is still `z_interrupt_stacks`, now tuned to 1 KB on measured
+evidence (D78, D79). Per-milestone numbers are in `firmware/README.md`; the escape hatch (D20) has
+not been needed and there is no current reason to think it will be.
+
 ## Pin budget — SSOP-28
 
 | Function | Pins |
@@ -327,19 +339,23 @@ bridge on `PA00`/`PA01`. Exact assignment is a Phase 3 task against datasheet §
 ```
 Claude Code hooks  (VS Code extension or terminal — identical)
       ▼
-wigwag        (CLI client, POSIX sh + nc)
-      │  AF_UNIX datagram → /tmp/wigwag.sock
+wg-notify     (hook client, bash /dev/udp, ~3 ms)
+      │  UDP datagram → 127.0.0.1:9410          (not AF_UNIX — D52)
       ▼
 wigwagd       (daemon, Python)
       │  per-session state + TTL, aggregate ERROR>WAIT>BUSY>IDLE
-      ▼
-mosquitto     (retained publish)
       │
-      ▼  Wi-Fi
-RNWF02  ──UART/AT──  PIC32CM PL10  (Zephyr)
-                          │
-                    TCC0 PWM → 3 FETs → 3 lamps  ·  button
+      ├── serial ─────────────────────────────► MCP2221A ──UART── PIC32CM PL10  (Zephyr)
+      │   `state BUSY` + `host on` every 2 s      (bridge)              │
+      │                                                                 │
+      └── mosquitto (retained publish) ──Wi-Fi──► RNWF02 ──UART/AT──────┘
+                                                                        │
+                                                  TCC0 PWM → 3 FETs → 3 lamps  ·  button
 ```
+
+One of those two branches is live, decided by the device's stored `transport` setting on its side
+and by whether a serial port is configured on the daemon's (ADR-0020, ADR-0022). The wire protocol
+for both is in [`CONTEXT.md`](../CONTEXT.md).
 
 ### Topics
 
@@ -352,15 +368,25 @@ RNWF02  ──UART/AT──  PIC32CM PL10  (Zephyr)
 
 ### Hook → state mapping
 
+As wired in [`host/settings.hooks.json`](../host/settings.hooks.json):
+
 | Hook | Matcher | State |
 |---|---|---|
-| `SessionStart` | `startup`, `resume`, `clear` | `IDLE` |
+| `SessionStart` | `startup\|resume\|clear` | `IDLE` |
 | `UserPromptSubmit` | — | `BUSY` |
 | `PreToolUse`, `PostToolUse` | `*` | `BUSY` (heartbeat, refreshes TTL) |
-| `Notification` | `permission_prompt`, `idle_prompt`, `agent_needs_input` | **`WAIT`** |
+| `PermissionRequest` | — | **`WAIT`** |
+| `Elicitation` / `ElicitationResult` | `*` | **`WAIT`** / `BUSY` |
+| `Notification` | `permission_prompt`, `idle_prompt`, `agent_needs_input` — **one matcher each** | **`WAIT`** |
 | `Stop` | — | `IDLE` |
 | `StopFailure` | `*` | `ERROR` |
 | `SessionEnd` | `*` | drop session |
+
+**One combined `Notification` matcher is why `WAIT` never fired for two days** (D123): matchers
+filter on the notification *type*, and no type contains a pipe. Hence one matcher per type, plus
+the documented `PermissionRequest` event. And note the asymmetry D129/D130 record — `WAIT` entered
+by `PermissionRequest` has no exit edge, because no hook fires when a person rejects or interrupts
+a tool call. It clears on the next `UserPromptSubmit` or the session TTL. That is Q5.
 
 Hook safety is non-negotiable: always `exit 0`; never write to stdout (`UserPromptSubmit` stdout
 is injected into the model's context, `SessionStart` stdout is shown to the user); works with the
@@ -370,22 +396,36 @@ daemon down; `SessionEnd` hooks share a ~1.5 s budget so it must be fire-and-for
 
 ## Repo layout
 
+As built. The west workspace top directory is the repo root, so `zephyr/`, `modules/`, `.west/`
+and `.venv/` are gitignored siblings of `firmware/` (ADR-0014).
+
 ```
 wigwag/
 ├── CLAUDE.md  JOURNAL.md  CONTEXT.md  README.md
-├── docs/adr/  docs/PLAN.md
-├── host/{wigwagd/, wigwag, hooks/wg-notify, settings.hooks.json, tests/}
+├── docs/{PLAN.md, adr/, upstreaming-to-zephyr.md, usb-serial-and-bootloader.md}
+├── host/
+│   ├── wigwagd/{state,protocol,config,listener,publisher,daemon,cli,paths}.py
+│   ├── hooks/{wg-notify, wg-notify.ps1}   settings.hooks.json
+│   ├── deploy/                            mosquitto conf, launchd plist, systemd unit
+│   └── tests/                             pytest, no broker or device needed
 ├── firmware/
-│   ├── src/{main,rnwf_at,lamp,button,link}.c
-│   ├── boards/pic32cm_pl10_cnano.overlay
-│   ├── boards/wigwag_rev_a/          custom board defn
-│   ├── dts/pl10-tcc-pwm.overlay      the D49 spike
-│   ├── prj.conf  prj_release.conf  credentials.conf.example
+│   ├── src/                               pure logic split from its Zephyr adapter:
+│   │                                      lamp/lamp_pwm, button/button_gpio, wdog/wdog_wdt,
+│   │                                      settings/settings_store, plus cmd, console,
+│   │                                      lineedit, link, transport, rnwf_at/rnwf_uart
+│   ├── tests/                             host unit tests, plain clang: make -C firmware/tests
+│   ├── modules/pic32cm-pl-nvmctrl/        out-of-tree flash driver (ADR-0017)
+│   ├── boards/pic32cm_pl10_cnano.overlay  TCC0 PWM (D49), SERCOM0, WDT, RSTC, NVMCTRL, lamps, SW0
+│   ├── dts/bindings/                      wigwag,lamps (D91)
+│   ├── patches/                           the one local patch to the pinned tree (D73)
+│   ├── prj.conf  prj_stacks.conf  credentials.conf.example  west.yml
 │   └── sim/fake_rnwf02.py
-├── hardware/wigwag/                  KiCad 9, 4-layer
-├── enclosure/*.scad
+├── enclosure/                             Phase 4, empty
 └── .claude/skills/journal/
 ```
+
+Still to come: `hardware/wigwag/` (KiCad 9, 4-layer) in Phase 3, `boards/wigwag_rev_a/` once
+there is a board to define, and `enclosure/*.scad` in Phase 4.
 
 ---
 
@@ -412,28 +452,31 @@ wigwag/
    untracked), silent when the journal was updated, when nothing changed, when no journal exists,
    and outside a git tree. Always exits 0 (D17).
 
-Remaining Phase 0 loose end: nothing is committed to git yet (D16).
+Both Phase 0 loose ends are closed: the work is committed (D16), and the state hooks are installed
+— though they were installed *wrong* and nobody noticed until 2026-08-15 (D123).
 
-### Phase 1 — Host software (no hardware needed)
+### Phase 1 — Host software (no hardware needed)  ·  ✅ COMPLETE
 6. ✅ `brew install mosquitto`, local broker with username/password.
 7. ✅ `wigwagd`: UDP listener, session table + TTL, priority aggregation, retained publish,
    subscribe to `wigwag/button`, coalesce heartbeat bursts.
-8. ✅ `wg-notify` hook client: POSIX sh, `sed` out `session_id`, one datagram via `nc -U`.
-9. ✅ `wigwag` CLI: `set|get|status|watch`.
+8. ✅ `wg-notify` hook client — **bash `/dev/udp`, no `sed`, `nc`, `jq`, Python or Node** (D32, D52).
+   Measured 2.9 ms median. A PowerShell fallback covers Windows installs without Git Bash.
+9. ✅ `wigwag` CLI: `set|clear|get|status|watch|config`.
 10. ✅ Install hooks; verify with `mosquitto_sub -t 'wigwag/#' -v` against a real session driven
     through IDLE → BUSY → WAIT → IDLE. Confirm identical behavior in the VS Code extension and
-    a terminal session (D47).
-11. ✅ Tests: aggregation priority, TTL expiry, hook latency, daemon-down path.
+    a terminal session (D47). **`WAIT` was the exception and stayed broken until D123.**
+11. ✅ Tests: aggregation priority, TTL expiry, hook latency, daemon-down path. 110 tests, needing
+    no broker, no network and no device.
+11b. ✅ **Beyond the original plan:** a serial publisher, so the daemon can drive a device on the
+    wire with no broker at all (ADR-0020, D111, D114, D115).
 
-### Phase 2 — Firmware
+### Phase 2 — Firmware  ·  complete except item 18
 12. ✅ Zephyr workspace, `west init`, mainline + `hal_microchip` (D64, D65, ADR-0014); `blinky`
     builds for `pic32cm_pl10_cnano`.
-13. **D49 spike, do this early — it gates the PCB:** get TCC0 PWM running on PL10. Add TCC nodes
-    + pinctrl to the SoC/board devicetree, bind `pwm_mchp_tcc_g1`. If mainline resists, try
-    Zephyr4Microchip; if it's genuinely missing, write it and upstream it. Success = a breathing
-    LED on a PL10 Curiosity Nano.
-    Done in `firmware/boards/pic32cm_pl10_cnano.overlay` — mainline needed **no** change, since
-    the whole gap was the missing devicetree nodes. Visual confirmation still outstanding.
+13. ✅ **D49 spike, done early because it gated the PCB:** TCC0 PWM running on PL10, in
+    `firmware/boards/pic32cm_pl10_cnano.overlay`. Mainline needed **no** driver change — the whole
+    gap was the missing devicetree nodes. Confirmed visually (a breathing LED) and on an
+    oscilloscope (500 Hz carrier), so TCC0 WO0/WO1/WO2 is safe to commit to the PCB.
 14. ✅ `rnwf_at.c`: bounded ring-buffer line assembly, request/response with timeouts, unsolicited
     result dispatch, connect state machine (reset → AT → Wi-Fi → MQTT → subscribe) with backoff.
     Core written free of Zephyr headers so it unit-tests under plain clang on macOS (D66).
@@ -441,11 +484,12 @@ Remaining Phase 0 loose end: nothing is committed to git yet (D16).
     SERCOM0 through a 3.3 V USB-UART adapter, tested against the real broker. **Not `native_sim`:**
     Zephyr's POSIX architecture does not work on macOS (D66, ADR-0015).
 16. ✅ `lamp.c`: 3 PWM channels, ~100 Hz render, gamma-corrected steady/breathe/blink/flicker.
-17. `button.c` (debounce + publish) and `link.c` (supervision → fail-visible wigwag, WDT). **Done** — plus
+17. ✅ `button.c` (debounce + publish) and `link.c` (supervision → fail-visible wigwag, WDT), plus
     brightness (D88–D90), `wigwag/online` (D92) and the watchdog (ADR-0016, D93–D95).
-    `link.c` done and verified across all three failure domains (D75). `button.c` done and verified
-    on hardware — 14 presses, no duplicates, long-hold at 3 s — but **polled rather than
-    interrupt-driven** (D86), since PL10 has no `eic` node. The WDT is the remaining piece.
+    `link.c` verified across all three failure domains (D75). `button.c` verified on hardware —
+    14 presses, no duplicates, long-hold at 3 s — but **polled rather than interrupt-driven**
+    (D86), since PL10 has no `eic` node. The watchdog is done too, and demonstrated by wedging the
+    render thread on purpose.
 18. Hardware bring-up: `EV10P22A` + `EV72E72A`, five jumpers (TX, RX, MCLR, 3V3, GND).
     **The only Phase 2 item still outstanding**, blocked on the `EV72E72A`. Everything to date runs
     against `sim/fake_rnwf02.py`; it settles whether the real module honours `AT+MQTTLWT` and how it
@@ -460,7 +504,12 @@ Remaining Phase 0 loose end: nothing is committed to git yet (D16).
 - configuration over the console, with settings in flash (ADR-0019)
 - a serial transport for the daemon (ADR-0020)
 - one transport at a time, chosen by a stored setting (ADR-0022)
+- `test wifi`, which tries the stored settings without committing to them and names the step that
+  failed (D122)
+- the fail-visible pattern rebuilt as an actual wigwag, since three discrete lamps cannot blend an
+  amber (D121)
 19. ✅ **Record `ram_report`/`rom_report`** in the journal; confirm the 8 KB budget holds (D48).
+    Currently **5 267 B of 8 192 (64.3 %)** and 35 516 B of flash — it holds, with 2 925 B free.
 
 ### Phase 3 — PCB (KiCad 9, 4-layer)
 20. Schematic: PL10 SSOP-28 + RNWF02PC + MCP1826 + USB-C power-only + 3 lamp channels with
@@ -513,8 +562,14 @@ Debuggers already on hand (PICkit 5, PICkit Basic, Atmel-ICE, J-Link) all work v
 - **D49 gate:** a breathing LED on PL10 hardware proves TCC PWM before any layout is committed.
 - **Footprint gate:** `ram_report` ≤ 8 KB with margin, recorded per milestone.
 - **Hook safety:** hooks emit nothing on stdout and `exit 0` with the daemon stopped.
-- **On hardware:** `west flash -r pyocd`; kill the broker → wigwag within 10 s; restore →
+- **On hardware, Wi-Fi:** `west flash -r pyocd`; kill the broker → wigwag within 10 s; restore →
   retained message restores correct state; power-cycle → correct state with no host action.
+- **On hardware, the wire:** `WIGWAG_SERIAL_PORT=auto wigwagd -vv`; stop the daemon → wigwag within
+  10 s of the last `host on`, and immediately on a clean `host off`. Confirm a device set to `wifi`
+  ignores `state` lines on the console and says so, which is ADR-0022's whole point.
+- **Both, end to end:** a real Claude Code session driving IDLE → BUSY → WAIT → IDLE, since three
+  bugs so far (D111's missing heartbeat, D123's dead matcher, D129's absent exit edge) were found
+  only by real use and by no test.
 - **Enclosure:** `make` renders STLs; `assert()`s fail loudly on RF clearance violations.
 
 ## Open questions
