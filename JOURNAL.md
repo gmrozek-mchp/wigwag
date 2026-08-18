@@ -7,6 +7,142 @@ Entries record what was done, why, and — importantly — what was tried and re
 
 ---
 
+## 2026-08-18 — the module answers at last, on 3.1.0; the Nano still cannot hear it
+
+**Done** — first contact with real RNWF02 hardware (`EV72E72A`), phase 2 item 18 half-closed. The
+module is proven and its firmware is now **3.1.0**; the wire to the Curiosity Nano is not.
+
+- `firmware/boards/pic32cm_pl10_cnano.overlay` — sercom0 `current-speed` **115200 → 230400**.
+- `firmware/src/main.c` — `AT_POLL_MS` 10 → 5, and `test wifi` now reports received bytes.
+- `firmware/src/rnwf_uart.{c,h}` — an ISR-side received-byte counter, `rnwf_uart_rx_bytes()`.
+- `firmware/src/rnwf_at.{c,h}` — `boot_seen`, so a pre-boot failure stops being blamed on step 0.
+- `firmware/tests/test_rnwf_at.c` — regression test for that (11 new checks, 111 in the file).
+- `firmware/prj.conf`, `firmware/sim/fake_rnwf02.py` — 115200 comments and the fake's default baud
+  corrected to the module's real 230400.
+- **New** `firmware/sim/probe_rnwf02.py` (host-side AT prober), `firmware/boards/bringup_rx_only.overlay`
+  (listen-only build), `firmware/tools/rnwf02_dfu_mac.py` (macOS DFU driver).
+- **Module firmware 2.0.0 → 3.1.0** on **both** modules, written to the low slot.
+- **New** `firmware/tools/fetch-rnwf02-firmware.sh` — URLs plus SHA-256 for the firmware package and
+  the DFU utilities, unpacked into a gitignored `firmware/tools/vendor/`. Vendor binaries stay out of
+  git; a substituted archive fails loudly instead of being flashed.
+- **New** `docs/module-firmware-dfu.md` — the reproducible procedure, including the four failure modes
+  that all present as "the module is dead".
+- **New** `ADR-0025` (ship the latest released module firmware) and `ADR-0026` (DFU on macOS goes
+  through pyftdi).
+- `firmware/sim/probe_rnwf02.py` — `--require-version X.Y.Z`, exit 3 on mismatch, so the ADR-0025
+  policy is a scriptable gate rather than a habit; and it now accepts `ftdi://` URLs.
+
+**Why**
+
+- **230400 is not a choice, it is the module's factory default** (DS70005544C Table 2-1). At 115200
+  the firmware and a factory module are mutually deaf, and that failure is *indistinguishable* from a
+  miswired pair: `AT+RST`, no `+BOOT`, `RESETTING → BACKOFF` forever. This one setting could have cost
+  days of chasing wiring.
+- 5 ms polling keeps the receive ring's headroom without spending RAM on it. At 10 bits per frame
+  230400 is 23 040 B/s, so 10 ms of back-to-back traffic is 230 bytes against a 256-byte ring — it
+  fits, but the margin falls to 1.1× on a *cooperative* poll. At 5 ms it is 115 bytes and 2.2×, the
+  same headroom the 115200 design had, for **0 bytes** of RAM where a bigger ring would cost 256.
+- 3.1.0 carries revision **58a15dc2** — precisely the AT Command Specification revision
+  `rnwf_at_cmds.h` cites. The shipped 2.0.0 predates it, lacks `+CFGCP` (D62, and ADR-0012's
+  provisioning plan depends on it) and is missing the KRACK fixes.
+
+**Tried and rejected**
+
+- **Swapping TX/RX in devicetree.** Impossible: `CTRLA.TXPO` puts TxD on PAD[0] under every encoding
+  (SERCOM USART Control A; Microchip KB-000007252 states it outright — "Tx pin can only be PAD[0]").
+  RXPO is free to pick any pad, TX is not. A reversed pair is a rewire, not a config change.
+- **Using `test wifi`'s step name to tell a miswire from a module fault.** It misattributed a boot
+  timeout to `"module responding"` — a command that had never been sent — because `step` stays 0
+  through the reset phase and `step_str()` only special-cased `state == RESETTING`. Both failures read
+  identically. Fixed, with the regression test, before relying on it.
+- **Microchip's `do_dfu.py` as shipped.** Windows and Linux only: on anything else it takes the Linux
+  path, shells out to `modprobe`/`udevadm` and looks for `/dev/ttyUSB*`. It also needs `ftd2xx`, whose
+  `libftd2xx.dylib` is absent here and fights macOS's own FTDI driver.
+- **The MCP2200 / USB-C port for DFU.** It reaches only UART1 and MCLR; DFU entry needs a 66-sample
+  pattern bit-banged on three lines. Fine for AT, useless for DFU.
+- **Timing the bit-bang rate by clocking bytes and measuring wall time.** Dominated by USB buffering,
+  not the sample clock: it reported 5.3 k, then 1.5 k, then 2.8 k samples/s for *both* 614400 and
+  2457600 requested — i.e. it did not scale with the request, so it measured nothing. 153600 was
+  correct from the start. Sweeping the requested rate against *DFU entry itself* found that in one
+  pass; the right instrument was the outcome, not a stopwatch.
+- **Inferring a module reboot from volatile echo state.** The `ATE0`-survives heuristic printed the
+  wrong verdict; the `+BOOT` banner in the same capture was the real evidence and said the opposite.
+- **Mixing pyftdi and `/dev/cu.usbserial-*` on one FT232R.** The second module refused DFU entry with
+  `FtdiError: UsbError: [Errno 60] Operation timed out` on *every* write, including 276-byte ones,
+  minutes after the same code had worked. The trigger was reading the version through the kernel VCP
+  first: macOS keeps its own FTDI driver attached and libusb then cannot drive the chip. Cured by
+  `Ftdi.reset(usb_reset=True)` plus `UsbTools.flush_cache()`, now automatic in the retry path — and
+  avoided entirely by using `ftdi://` URLs throughout, which the prober now accepts.
+- **Retrying only on a clean `DfuEntryError`.** The USB timeout is not that, so the first retry loop
+  let it escape and abort the run — leaving the chip latched in bit-bang, which poisoned every
+  subsequent attempt. Retries now catch everything and reset the chip between attempts.
+
+**Verified**
+
+- **Module pinout and default baud** — DS70005544C Table 2-1: UART1 default 230,400 8N1 no flow
+  control, pin 14 `UART1_TX` an output, pin 19 `UART1_RX` an input; straps 1/2 low select UART1.
+- **The add-on board ties DFU to UART1** — App Developer's Guide Table 8-1 and its note: "RNWF02 Add
+  On Board design has interconnected UART1_Tx to PB1/DFU_Tx and UART1_Rx with PB0_Rx to enable both
+  Mission mode and DFU operation over the single UART interface." So DFU runs on J205 pins 3/4, which
+  is the only pair reachable without soldering (pin 26 is TP205, pin 10 has no test point).
+- **MCLR floats safely** — DS50003575C Figure 5-4, R231 10k pull-up on `RESET_N`; the module boots
+  with MCLR unconnected. Power selection is JP200 on J201-2/J201-3 for host 3.3 V (Table 3-2).
+- **`rx 0 bytes` on the Nano link in both wire orders** — from the new counter, which is the whole
+  reason it exists: silence and garble are different faults and used to look the same.
+- **The module is healthy over an FTDI on those same J205 pins** — `AT` → `OK`,
+  `+GMR:"2.0.0 0 e41f977cb [16:31:26 Apr 12 2024]"`.
+- **MCLR is wired** — pulsing it produced `\r+BOOT:"RNWF - AT Command Interface 2.0.0 (c) 2024
+  Microchip Technology Inc"`, which incidentally confirms the **leading-CR AEC framing** that
+  `rnwf_at_cmds.h` assumes and `fake_rnwf02.py` models.
+- **DFU mode entered** — PE version 1, device ID `29c70053`; the guide writes it `0x29C7x053` and the
+  vendor's own comparison skips that digit.
+- **After the write** — `+GMR:"3.1.0 1 58a15dc2 [15:01:42 Aug 19 2025]"`. The middle field is the
+  anti-rollback security level, 0 on 2.0.0 and 1 now.
+- **Both slots, from `AT+DI`** — `+DI:15.0,0xFFFFFFC0,0x01030100,0x60000000,2` and
+  `+DI:15.1,0xFFFFFFE0,0x00020000,0x600F0000,3`: 3.1.0 in the low slot, **2.0.0 still intact in the
+  high slot**, and the boot ROM chose 3.1.0 because its sequence number is *lower*. A fallback image
+  therefore still exists on the part.
+- **`+CFGCP` arrived with 3.1.0** — `ERROR:0.3` (unknown command) on 2.0.0 versus
+  `ERROR:0.5,"Incorrect Number of Parameters"` on 3.1.0.
+- **Footprint and tests** — RAM **5 264 B / 64.26 %**, flash **35 868 B / 58.38 %**
+  (`west build`); **11 155** firmware checks and **110** host tests, 0 failures.
+- **Second module updated the same way**, and the gate that proves it: `--require-version 3.1.0`
+  printed `VERSION CHECK FAILED: module runs 2.0.0` before, `VERSION OK: 3.1.0` after. That module
+  needed **three** DFU-entry attempts, which is why the retry loop exists.
+- **The fetcher round-trips** — run from an empty cache it downloaded both archives, matched all six
+  SHA-256s (two zips, four images) and unpacked to the layout the DFU driver expects.
+
+**Open**
+
+- **The Nano cannot hear the module, and the module is no longer a suspect.** `rx 0 bytes` with both
+  orders of PA04/PA05, while the same module answers AT over an FTDI on the same J205 pins 3/4, with
+  the same power. The fault is confined to the J205 ↔ PA04/PA05 path: jumpers, seating, or a missing
+  common ground between the two boards.
+- **DFU entry is flaky** — it failed twice at the settings that then worked. A 5-attempt retry loop is
+  in the tool; Microchip's own code loops for the same reason. Cause unknown.
+- **ATV3 now appends prose to errors** (`ERROR:0.5,"Incorrect Number of Parameters"`).
+  `rnwf_at_cmds.h` attributes prose to levels 4–5 only and says level 3 gives a bare code. Our prefix
+  match on `"ERROR"` is unaffected, but the comment is now wrong.
+- **The real module echoes commands and emits a `>` prompt**; neither is modelled by
+  `fake_rnwf02.py`. `ATE0` turns both off, is accepted by 2.0.0 and 3.1.0, and does **not** survive a
+  reset. Our client never sends it, so it pays for the echo of every command it writes.
+- **`+WSTAC` gained ID 9 on 3.1.0** (`+WSTAC:9,2`), absent from `enum rnwf_wstac_id`. Unused so far.
+- **`phase3/pcb-routing` already uses ADR numbers 0023 and 0024**, so today's ADRs are **0025** and
+  **0026**. Whoever merges that branch should check nothing else collided.
+- **DFU entry flakiness is unexplained.** Three attempts on one module, one on the other, no pattern
+  found. Retries paper over it; the cause is still open.
+- **`fetch-rnwf02-firmware.sh` pins 3.1.0 by checksum, which will go stale.** ADR-0025's policy is
+  "latest released", so someone has to notice a new release. There is no automation for that yet, and
+  the version in the pre-ship gate is currently hard-coded in the command rather than read from one
+  place.
+
+**Next**
+
+- Find the break between J205 pins 3/4 and PA04/PA05. Everything on the module side is now proven, so
+  this is jumpers, seating or ground — and `test wifi` will say `rx 0 bytes` until it is fixed.
+
+---
+
 ## 2026-08-17 — the documentation catches up with the device it describes
 
 **Done** — a full pass over `README.md`, `CONTEXT.md`, `docs/PLAN.md`, `host/README.md`,

@@ -42,3 +42,6 @@ mosquitto.db
 
 # --- macOS ---
 .DS_Store
+
+# Vendor firmware and DFU utilities, fetched by firmware/tools/fetch-rnwf02-firmware.sh.
+firmware/tools/vendor/
