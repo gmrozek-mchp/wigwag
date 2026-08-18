@@ -27,7 +27,15 @@
  * we still need our own upper bound in case no AEC arrives at all.
  */
 #define TMO_SHORT_MS	2000	/* a command the module answers immediately */
-#define TMO_BOOT_MS	5000	/* AT+RST -> +BOOT */
+/*
+ * AT+RST -> +BOOT. **Measured, not guessed**: a real RNWF02PC on firmware 3.1.0 takes
+ * 3849/3894/3959/4049/4059 ms over five consecutive `test module` runs, warm, on a good supply.
+ * The original 5000 left ~26 % headroom, which is not enough for a step whose spurious failure
+ * drops the client into backoff and delays the link for no reason (Rule 4: a false "module is
+ * dead" is worse than a slower true one). 10 s costs nothing but the time to notice a genuinely
+ * absent module, which is already covered by the backoff cycle.
+ */
+#define TMO_BOOT_MS	10000	/* AT+RST -> +BOOT; module measures ~4.0 s */
 #define TMO_WIFI_MS	30000	/* AT+WSTA=1 -> +WSTAAIP (association + DHCP) */
 #define TMO_MQTT_MS	15000	/* AT+MQTTCONN -> +MQTTCONNACK (DNS + TCP + CONNECT) */
 

@@ -224,6 +224,28 @@ static void test_only_host_on_and_state_are_host_activity(void)
 	CHECK(!cmd_is_host_activity(NULL), "NULL is not a host");
 }
 
+/*
+ * `test` takes a subject, and the two subjects mean different things: `module` needs no settings and
+ * answers "is anything there", `wifi` needs an SSID and answers "are these credentials right". A
+ * bare or misspelled `test` must be rejected rather than silently picking one.
+ */
+static void test_test_subjects(void)
+{
+	struct cmd c;
+
+	CHECK(run("test module", &c) && c.kind == CMD_TEST_MODULE, "test module");
+	CHECK(run("test wifi", &c) && c.kind == CMD_TEST_WIFI, "test wifi");
+	CHECK(run("  test   module  ", &c) && c.kind == CMD_TEST_MODULE, "test module, padded");
+
+	CHECK(!run("test", &c), "bare test is rejected");
+	CHECK(!run("test bogus", &c), "unknown subject is rejected");
+	CHECK(!run("test modul", &c), "a near miss is rejected, not guessed at");
+
+	/* A rejected `test` still reports as a test, so the console can say which verb was wrong. */
+	(void)run("test bogus", &c);
+	CHECK(c.kind == CMD_TEST_WIFI || c.kind == CMD_TEST_MODULE, "rejected test still names itself");
+}
+
 static void test_secrets_are_marked(void)
 {
 	/* `show` relies on this. Getting it wrong prints a Wi-Fi password to anyone with a cable. */
@@ -293,6 +315,7 @@ int main(void)
 	test_echo_verb();
 	test_host_verb();
 	test_only_host_on_and_state_are_host_activity();
+	test_test_subjects();
 	test_secrets_are_marked();
 	test_key_names_round_trip();
 	test_long_lines_do_not_overrun();

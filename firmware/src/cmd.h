@@ -71,6 +71,16 @@ enum cmd_kind {
 	 * which step it reached, and leaves the transport setting and the lamps alone.
 	 */
 	CMD_TEST_WIFI,
+
+	/**
+	 * `test module` — is the module *there*? The narrowest question the AT link can answer.
+	 *
+	 * `test wifi` needs an SSID and a reachable broker before it says anything useful, so during
+	 * bring-up it answers a question nobody asked. This resets the module and waits for `+BOOT`,
+	 * which needs no configuration at all and proves **both** directions in one exchange: the reset
+	 * only happens if the module heard us, and the banner only arrives if we can hear it.
+	 */
+	CMD_TEST_MODULE,
 };
 
 /**

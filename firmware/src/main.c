@@ -66,6 +66,18 @@ static struct {
 /* Generous: the script's own timeouts total more than 45 s if every step waits its full allowance. */
 #define WIFI_TEST_BUDGET_MS 60000U
 
+/* `test module` state; see module_test_start(). */
+static struct {
+	bool running;
+	uint32_t started_ms;
+} module_test;
+
+/*
+ * Must exceed rnwf_at's TMO_BOOT_MS (10 s, and the module really does take ~4 s), or this budget
+ * fires first and reports a failure while the client is still legitimately waiting.
+ */
+#define MODULE_TEST_BUDGET_MS 12000U
+
 /*
  * Live settings: build-time defaults from Kconfig, overlaid by whatever is stored, editable over the
  * console (D37/D56). Static because the AT client borrows pointers into it and never copies.
@@ -238,7 +250,7 @@ static const struct rnwf_at_callbacks at_callbacks = {
 
 int wifi_test_start(void)
 {
-	if (wifi_test.running) {
+	if (wifi_test.running || module_test.running) {
 		return -EALREADY;
 	}
 
@@ -266,6 +278,70 @@ int wifi_test_start(void)
 	rnwf_at_start(&at_client, wifi_test.started_ms);
 
 	return 0;
+}
+
+/*
+ * `test module` — the narrowest liveness question, and the one to ask first.
+ *
+ * Deliberately needs no settings. `test wifi` cannot report anything until an SSID is stored and a
+ * broker answers, which makes it useless as a *bring-up* instrument: during bring-up the question is
+ * not "are these credentials right" but "is there a module on the other end of these two wires".
+ *
+ * Passing requires both directions to work, which is what makes it worth having: the module only
+ * reboots if it received AT+RST, and the +BOOT banner only arrives if we can hear it. One exchange,
+ * both wires, no configuration.
+ */
+int module_test_start(void)
+{
+	if (module_test.running || wifi_test.running) {
+		return -EALREADY;
+	}
+
+	/* Same on-demand bring-up as the Wi-Fi test: on a wired device the client was never started. */
+	if (rnwf_uart_init(&at_client, &module_cfg, &at_callbacks) != 0) {
+		return -ENODEV;
+	}
+
+	module_test.running = true;
+	module_test.started_ms = (uint32_t)k_uptime_get();
+
+	printk("test: resetting the module, waiting for +BOOT\n");
+
+	rnwf_at_start(&at_client, module_test.started_ms);
+
+	return 0;
+}
+
+static void module_test_service(uint32_t now)
+{
+	uint32_t elapsed = now - module_test.started_ms;
+
+	rnwf_uart_poll(&at_client);
+	rnwf_at_tick(&at_client, now);
+
+	if (at_client.boot_seen) {
+		printk("test: PASS — module answered, +BOOT after %u ms (rx %u bytes)\n", elapsed,
+		       rnwf_uart_rx_bytes());
+		printk("test:   both directions work: it reset because it heard us\n");
+		module_test.running = false;
+		return;
+	}
+
+	if (at_client.state == RNWF_AT_ST_BACKOFF || elapsed > MODULE_TEST_BUDGET_MS) {
+		uint32_t rx_bytes = rnwf_uart_rx_bytes();
+
+		printk("test: FAIL — no +BOOT after %u ms (rx %u bytes)\n", elapsed, rx_bytes);
+
+		if (rx_bytes == 0U) {
+			printk("test:   nothing arrived at all: check power, ground, and that the "
+			       "module's TX reaches this board's RX pin\n");
+		} else {
+			printk("test:   bytes arrived but no +BOOT: suspect the baud rate (the module "
+			       "defaults to 230400) or the wrong module UART\n");
+		}
+
+		module_test.running = false;
+	}
 }
 
 /** Advance the test and narrate it. Called every loop while running. */
@@ -380,6 +456,10 @@ static void at_service(bool at_ready)
 		 */
 		if (wifi_test.running) {
 			wifi_test_service((uint32_t)k_uptime_get());
+		}
+
+		if (module_test.running) {
+			module_test_service((uint32_t)k_uptime_get());
 		}
 
 		if (at_ready) {

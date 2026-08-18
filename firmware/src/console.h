@@ -42,4 +42,12 @@ void console_poll(void);
  */
 int wifi_test_start(void);
 
+/**
+ * Reset the module and wait for +BOOT: the liveness check that needs no settings.
+ *
+ * Returns 0 once started, -EALREADY if a test is already running, or -ENODEV if the module UART
+ * will not bind. Progress and the verdict go to the console as the service loop advances it.
+ */
+int module_test_start(void);
+
 #endif /* CONSOLE_H */

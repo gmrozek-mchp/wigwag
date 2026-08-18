@@ -101,6 +101,7 @@ static void print_help(void)
 	       "  gain green|yellow|red <0-255>   per-lamp calibration, applies now\n"
 	       "  echo on|off              off for a host program driving this port\n"
 	       "  host on|off              host liveness; repeat within 10 s to stay trusted\n"
+	       "  test module              is the module alive? resets it and waits for +BOOT\n"
 	       "  test wifi                try the stored wifi/broker settings, without committing\n");
 }
 
@@ -169,7 +170,7 @@ static void exec(struct cmd *c, bool ok)
 			printk("bad gain: expected green|yellow|red and 0-255\n");
 			break;
 		case CMD_TEST_WIFI:
-			printk("bad test: only `test wifi` is supported\n");
+			printk("bad test: expected `test module` or `test wifi`\n");
 			break;
 		default:
 			printk("unknown command; try help\n");
@@ -260,6 +261,19 @@ static void exec(struct cmd *c, bool ok)
 		lineedit_set_echo(&editor, c->num != 0U);
 		printk("echo %s\n", (c->num != 0U) ? "on" : "off");
 		break;
+
+	case CMD_TEST_MODULE: {
+		int ret = module_test_start();
+
+		if (ret == -EALREADY) {
+			printk("test already running\n");
+		} else if (ret == -ENODEV) {
+			printk("cannot test: module uart unavailable\n");
+		} else if (ret != 0) {
+			printk("cannot test (%d)\n", ret);
+		}
+		break;
+	}
 
 	case CMD_TEST_WIFI: {
 		int ret = wifi_test_start();

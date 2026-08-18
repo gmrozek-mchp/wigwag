@@ -22,6 +22,13 @@
 static int failures;
 static int checks;
 
+/*
+ * Mirrors TMO_BOOT_MS in rnwf_at.c, which is 10 s because a real RNWF02PC on 3.1.0 takes ~4.0 s to
+ * emit +BOOT (measured over five runs: 3849-4059 ms). One named constant, so raising the timeout
+ * again means changing two lines rather than hunting bare 5001s through this file.
+ */
+#define BOOT_TIMEOUT_MS 10000U
+
 #define CHECK(cond, ...)                                                                           \
 	do {                                                                                       \
 		checks++;                                                                          \
@@ -277,7 +284,7 @@ static void test_pre_boot_failure_is_not_blamed_on_step_zero(void)
 	      rnwf_at_step_str(&at));
 
 	/* No +BOOT: the boot wait times out and the client backs off, still at step 0. */
-	rnwf_at_tick(&at, 5001);
+	rnwf_at_tick(&at, BOOT_TIMEOUT_MS + 1U);
 	CHECK(at.state == RNWF_AT_ST_BACKOFF, "state %d", at.state);
 	CHECK(at.step == 0U, "step %u", at.step);
 	CHECK(strcmp(rnwf_at_step_str(&at), "resetting the module") == 0,
@@ -538,10 +545,10 @@ static void test_timeout_backs_off_and_retries(void)
 	rnwf_at_start(&at, 0);
 
 	/* No +BOOT ever arrives. */
-	rnwf_at_tick(&at, 4999);
+	rnwf_at_tick(&at, BOOT_TIMEOUT_MS - 1U);
 	CHECK(at.state == RNWF_AT_ST_RESETTING, "gave up too early");
 
-	rnwf_at_tick(&at, 5001);
+	rnwf_at_tick(&at, BOOT_TIMEOUT_MS + 1U);
 	CHECK(at.state == RNWF_AT_ST_BACKOFF, "state %d after boot timeout", at.state);
 	CHECK(at.timeouts == 1U, "timeouts=%u", at.timeouts);
 
@@ -549,10 +556,10 @@ static void test_timeout_backs_off_and_retries(void)
 	{
 		size_t before = fake.n_sent;
 
-		rnwf_at_tick(&at, 5500);
+		rnwf_at_tick(&at, BOOT_TIMEOUT_MS + 500U);
 		CHECK(fake.n_sent == before, "retried before the backoff elapsed");
 
-		rnwf_at_tick(&at, 6100);
+		rnwf_at_tick(&at, BOOT_TIMEOUT_MS + 1100U);
 		CHECK(fake.n_sent > before, "never retried");
 		CHECK(strcmp(last_sent(), RNWF_AT_RESET) == 0, "retry sent '%s'", last_sent());
 	}

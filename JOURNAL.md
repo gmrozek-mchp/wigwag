@@ -136,10 +136,45 @@ module is proven and its firmware is now **3.1.0**; the wire to the Curiosity Na
   the version in the pre-ship gate is currently hard-coded in the command rather than read from one
   place.
 
+### Later the same day — the link works, and `test module` is the command that says so
+
+The J205 ↔ PA04/PA05 wiring was refitted and **the AT link now works from the PIC32**. On the first
+try `test wifi` walked `resetting the module` → `set ssid` → `set security type` → `associate and get
+an IP`, which is four request/response round trips, so both directions are proven. It stalls at
+association only because the SSID was a placeholder.
+
+**Added `test module`** (`cmd.h`/`cmd.c`/`console.c`/`main.c`, plus parser tests). `test wifi` was the
+wrong instrument for bring-up: it demands an SSID and a reachable broker before it says anything, so
+during bring-up it answers a question nobody asked. `test module` resets the module and waits for
+`+BOOT`, needs no configuration at all, and proves both wires in one exchange — the module only
+reboots if it heard us, and the banner only arrives if we can hear it.
+
+```
+test module
+test: resetting the module, waiting for +BOOT
+test: PASS — module answered, +BOOT after 3869 ms (rx 96 bytes)
+test:   both directions work: it reset because it heard us
+```
+
+**The number in that line changed a timeout.** `+BOOT` takes **3849 / 3894 / 3959 / 4049 / 4059 ms**
+over five consecutive runs — a real module on 3.1.0 spends ~4.0 s booting, against `TMO_BOOT_MS` of
+**5 s**. That is ~26 % headroom, warm, on a good bench supply, and a spurious boot timeout drops the
+client into backoff and delays the link for no reason. `TMO_BOOT_MS` is now **10 s**, with the
+measurement in the comment; `MODULE_TEST_BUDGET_MS` follows at 12 s so the test's own budget cannot
+fire first. The four unit tests that hard-coded 4999/5001/5500/6100 now derive from one named
+`BOOT_TIMEOUT_MS` — they failed loudly on the change, which is exactly what they are for.
+
+Worth keeping: **nothing would have revealed that margin except measuring it on hardware.** The 5 s
+value had looked fine through every simulated run, because `fake_rnwf02.py` answers instantly.
+
+RAM **5 272 B / 64.36 %**, flash **36 688 B / 59.71 %**. 11 162 firmware checks, 0 failures.
+
 **Next**
 
-- Find the break between J205 pins 3/4 and PA04/PA05. Everything on the module side is now proven, so
-  this is jumpers, seating or ground — and `test wifi` will say `rx 0 bytes` until it is fixed.
+- `test wifi` end to end against a real network and broker, now that the link and the module are both
+  proven. The one thing still untested on hardware is the Wi-Fi and MQTT path itself.
+- Consider having the client send `ATE0` at startup: the module echoes every command back, so the
+  firmware currently pays twice for each one on a 230400 line it shares with nothing else.
 
 ---
 
