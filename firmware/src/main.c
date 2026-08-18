@@ -61,6 +61,7 @@ static struct {
 	uint32_t started_ms;
 	uint8_t last_step;
 	uint32_t last_errors;
+	uint32_t last_timeouts;
 } wifi_test;
 
 /* Generous: the script's own timeouts total more than 45 s if every step waits its full allowance. */
@@ -271,6 +272,7 @@ int wifi_test_start(void)
 	wifi_test.started_ms = (uint32_t)k_uptime_get();
 	wifi_test.last_step = 0xFF;
 	wifi_test.last_errors = at_client.errors;
+	wifi_test.last_timeouts = at_client.timeouts;
 
 	printk("test: trying ssid \"%s\" broker %s:%u%s\n", settings.ssid, settings.broker,
 	       settings.port, (settings.pass[0] != '\0') ? "" : " (open network)");
@@ -380,14 +382,22 @@ static void wifi_test_service(uint32_t now)
 
 	if (at_client.state == RNWF_AT_ST_BACKOFF) {
 		uint32_t rx_bytes = rnwf_uart_rx_bytes();
-
-		printk("test: FAIL at \"%s\" — timed out (%u ms)\n", rnwf_at_step_str(&at_client),
-		       elapsed);
+		bool timed_out = (at_client.timeouts != wifi_test.last_timeouts);
 
 		/*
-		 * Say whether anything arrived at all before guessing at causes. A timeout with zero
-		 * received bytes is a different fault from a timeout with bytes that did not parse,
-		 * and during module bring-up it is the only distinction that matters.
+		 * Do not call it a timeout unless it was one. BACKOFF is also entered when the module
+		 * *reports* a failure — +WSTAERR or +WSTALD — which on a wrong network arrives long
+		 * before the 30 s association allowance expires. Claiming "timed out (13870 ms)" for a
+		 * failure the module volunteered at 13.9 s of a 30 s budget is the diagnostic lying
+		 * about the one thing it exists to explain (Rule 4).
+		 */
+		printk("test: FAIL at \"%s\" — %s (%u ms)\n", rnwf_at_step_str(&at_client),
+		       timed_out ? "timed out" : "the module reported a failure", elapsed);
+
+		/*
+		 * Say whether anything arrived at all before guessing at causes: zero received bytes is
+		 * a different fault from bytes that did not get us anywhere, and during bring-up that is
+		 * the only distinction that matters.
 		 */
 		if (rx_bytes == 0U) {
 			printk("test:   rx 0 bytes — nothing at all is arriving on the module UART\n");
@@ -397,9 +407,9 @@ static void wifi_test_service(uint32_t now)
 			printk("test:   rx %u bytes, %u dropped, %u overruns\n", rx_bytes,
 			       at_client.lines_dropped, rnwf_uart_overruns());
 			printk("test:   %s\n",
-			       (at_client.step <= 4U)
-				       ? "the module is talking but not answering; suspect the baud "
-					 "rate or framing"
+			       rnwf_at_before_network(&at_client)
+				       ? "the module is answering, so this is the network: check ssid, "
+					 "pass and sec"
 				       : "the broker did not answer; check its address, port and that "
 					 "it is up");
 		}

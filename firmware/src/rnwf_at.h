@@ -177,6 +177,16 @@ void rnwf_at_tick(struct rnwf_at *at, uint32_t now_ms);
  */
 const char *rnwf_at_step_str(const struct rnwf_at *at);
 
+/**
+ * Has the connect script reached the network yet?
+ *
+ * True while it is still at or before Wi-Fi association, false once an IP has been obtained and the
+ * remaining steps are all broker business. Lets a caller tell "the network did not accept us" from
+ * "the broker did not answer", which are the two failures users confuse, without hard-coding a step
+ * number that a new step would invalidate.
+ */
+bool rnwf_at_before_network(const struct rnwf_at *at);
+
 /** Publish. Returns 0 on success, -1 if not ready or the command would not fit. */
 int rnwf_at_publish(struct rnwf_at *at, const char *topic, const char *payload, bool retain);
 

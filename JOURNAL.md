@@ -203,11 +203,29 @@ pattern — and the repo layout given the new tools.
 
 RAM **5 272 B / 64.36 %**, flash **36 748 B / 59.81 %**. 11 166 firmware checks, 0 failures.
 
-**Still to confirm on hardware**
+**Echo off confirmed on hardware, and the same run found two lies in the diagnostic**
 
-- That `lines_dropped` really is 0 through a connect attempt now. The console was held by a serial
-  terminal when this was flashed, so echo-off is asserted by unit test and by the specification, not
-  yet seen with my own eyes on the wire.
+A connect attempt against a real SSID reported `rx 136 bytes, 0 dropped, 0 overruns` — so `ATE0`
+works, and `lines_dropped` is 0 through a full script for the first time. The same four lines
+contained two false statements, both now fixed:
+
+- **`the broker did not answer` for a Wi-Fi association failure.** `main.c` chose that advice with a
+  bare `step <= 4`, the remembered index of the association step — and inserting `ATE0` at the front
+  of the script shifted it to 5, so the comparison went stale in the same commit that added the step.
+  Replaced with `rnwf_at_before_network()`, which finds the association step in `connect_script[]` by
+  its build function, so a future insertion cannot repeat this. The regression test walks the whole
+  script and asserts the boundary against step *names*, which is the part that would have caught it.
+- **`timed out (13870 ms)` when nothing timed out.** `TMO_WIFI_MS` is 30 s and association began at
+  ~4.2 s, so at 13.9 s it had 20 s left. BACKOFF is also entered when the module *reports* a failure
+  (`+WSTAERR`, `+WSTALD`), which is what happened. The message now says "the module reported a
+  failure" unless the `timeouts` counter actually moved (Rule 4: the diagnostic lied about the one
+  thing it exists to explain).
+
+Generalising: **an index into a table that other code inserts into is a landmine**, and this project
+has now stepped on it twice in one day — first `step` staying 0 through the reset phase, then this.
+Both were the same mistake: a number standing in for a position, with nothing asserting the two agree.
+
+RAM **5 280 B / 64.45 %**, flash **36 864 B / 60.00 %**. 11 182 firmware checks, 0 failures.
 
 ---
 

@@ -318,6 +318,51 @@ static void test_pre_boot_failure_is_not_blamed_on_step_zero(void)
 	      rnwf_at_step_str(&at));
 }
 
+/*
+ * The network boundary must track the script, not a remembered index.
+ *
+ * The bug this pins: main.c used to say `step <= 4` to mean "before the network is up". Inserting
+ * ATE0 at the front of the script shifted association from 4 to 5, and a failed *association* then
+ * advised the user to go and check their broker. Asserting the predicate against the step names means
+ * the next inserted step fails a test instead of quietly producing wrong advice.
+ */
+static void test_network_boundary_follows_the_script(void)
+{
+	bool seen_association = false;
+
+	setup();
+	rnwf_at_start(&at, 0);
+	feed("\r+BOOT:RNWF02\r\n");
+
+	while (at.state == RNWF_AT_ST_SCRIPT) {
+		const char *name = rnwf_at_step_str(&at);
+		const char *cmd = last_sent();
+		bool is_association = (strcmp(name, "associate and get an IP") == 0);
+
+		if (is_association) {
+			seen_association = true;
+		}
+
+		/*
+		 * At or before association: still the network's problem. After it: the broker's.
+		 * Association itself counts as "before", because failing there is a network failure.
+		 */
+		CHECK(rnwf_at_before_network(&at) == !(seen_association && !is_association),
+		      "before_network wrong at step \"%s\"", name);
+
+		feed("OK\r\n");
+
+		if (strstr(cmd, "AT+WSTA=1") != NULL) {
+			feed("\r+WSTAAIP:1,\"192.168.1.42\"\r\n");
+		} else if (strstr(cmd, "AT+MQTTCONN") != NULL) {
+			feed("\r+MQTTCONNACK:0,0\r\n");
+		}
+	}
+
+	CHECK(seen_association, "the script no longer has an association step");
+	CHECK(at.state == RNWF_AT_ST_READY, "state %d", at.state);
+}
+
 static void test_leading_cr_aec_framing(void)
 {
 	/*
@@ -681,6 +726,7 @@ int main(void)
 	test_silent_module_is_detected();
 	test_broker_loss_reported_by_module();
 	test_connected_state_aec_is_harmless();
+	test_network_boundary_follows_the_script();
 	test_leading_cr_aec_framing();
 	test_ok_is_accepted_not_done();
 	test_full_bring_up_and_command_text();

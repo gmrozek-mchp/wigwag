@@ -266,6 +266,33 @@ static const struct at_step connect_script[] = {
 
 #define SCRIPT_LEN ((uint8_t)(sizeof(connect_script) / sizeof(connect_script[0])))
 
+/*
+ * Index of the association step, found in the table rather than remembered.
+ *
+ * There used to be a bare `step <= 4` in main.c meaning "before the network is up". Inserting
+ * step_echo_off at the front of the script shifted association from 4 to 5 and the comparison went
+ * quietly stale, so a failed association started advising people to check their broker. Deriving it
+ * means the next inserted step cannot do that again.
+ */
+static uint8_t network_step_index(void)
+{
+	uint8_t i;
+
+	for (i = 0; i < SCRIPT_LEN; i++) {
+		if (connect_script[i].build == step_wifi_up) {
+			return i;
+		}
+	}
+
+	return SCRIPT_LEN;
+}
+
+bool rnwf_at_before_network(const struct rnwf_at *at)
+{
+	/* <=, not <: failing *at* the association step is still failing before the network is up. */
+	return at->step <= network_step_index();
+}
+
 const char *rnwf_at_step_str(const struct rnwf_at *at)
 {
 	if (at->state == RNWF_AT_ST_READY) {
