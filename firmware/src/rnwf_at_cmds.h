@@ -49,6 +49,23 @@
  */
 #define RNWF_AT_SET_VERBOSITY	"ATV3"
 
+/*
+ * Turn off command echo (spec "Serial Interface / Basic Commands / E": ATE<N>, 0 = "Turn off
+ * character echo", page 18).
+ *
+ * Sent before anything else, because a module with echo *on* — which is the state after every reset,
+ * as the setting does not persist — replays each command we write straight back at us. Verified on
+ * hardware on both 2.0.0 and 3.1.0. Three consequences, worst first:
+ *
+ *  1. Every echoed command arrives as an unparseable line, so lines_dropped climbs on a *healthy*
+ *     run. That counter exists to mean "something is wrong" (D77), and echo made it lie.
+ *  2. It doubles receive traffic during a command burst, on the ring this firmware sizes carefully.
+ *  3. It is what produces the bare ">" prompt character the module emits after each response, with
+ *     no CR or LF, which otherwise prefixes the *next* assembled line. That prompt appears nowhere
+ *     in the specification — searched, not assumed — so nothing should be written to depend on it.
+ */
+#define RNWF_AT_ECHO_OFF	"ATE0"
+
 /* System (spec: +RST, +GMR, +BOOT). */
 #define RNWF_AT_RESET		"AT+RST"
 #define RNWF_AT_GET_VERSION	"AT+GMR"	/* D62: confirm firmware >= 3.0 for +CFGCP */

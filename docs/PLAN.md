@@ -258,6 +258,13 @@ FET selection: logic-level N-channel, Vgs(th) low enough to fully enhance at 3.3
 | **D123** | **`WAIT` was unreachable from Phase 1 until 2026-08-15.** The `Notification` hook used one combined matcher, `permission_prompt\|idle_prompt\|agent_needs_input`, but matchers filter on the notification *type* and no type contains a pipe — so it matched nothing and the most important state, the only one that asks for your attention, never once fired. Found by driving a real session, not by any test. Fixed with the documented `PermissionRequest` event plus one matcher per notification type | built |
 | **D129** | **There is no event for a user rejecting or interrupting a tool call**, and `PermissionDenied` is not one — it fires only "when auto mode denies a tool call". Verified against the hooks documentation after the wiring for it proved inert on hardware. So a `WAIT` entered by `PermissionRequest` has **no exit edge**: it clears only when the user next types (`UserPromptSubmit`) or the daemon's session TTL expires. MCP `Elicitation` is the same condition and *does* have an exit edge (`ElicitationResult`), so both are wired | settled |
 | **D130** | **Hooks are edge-triggered with no heartbeat**, so any state entered by an event and left by none is a trap. `IDLE`, `BUSY` and `ERROR` all have exit edges; `WAIT` does not (D129). That is the whole bug class, and it also means a legitimately-waiting session and an orphaned one emit identical data — silence — so they cannot be distinguished. Deleting a session in the history UI emits no `SessionEnd`, so it orphans; with max-priority aggregation (D30) one stale `WAIT` pins the lamps red until the 15-minute TTL | settled |
+| **D131** | **The module UART runs at 230400, because that is the module's factory default** — RNWF02 UART1 is "Default: 230,400 baud, 8N1, no flow control" (DS70005544C Table 2-1). Not a choice: at `sercom0`'s previous 115200 the firmware and a factory module are mutually deaf, and the failure is *indistinguishable* from a miswired pair — `AT+RST`, no `+BOOT`, `RESETTING → BACKOFF` forever. The receive poll is halved to 5 ms to hold the ring's headroom: at 10 bits/frame 230400 is 23 040 B/s, so 10 ms of back-to-back traffic is 230 bytes against a 256-byte ring (1.1× margin on a cooperative poll), where 5 ms is 115 bytes and 2.2×. Costs 0 bytes of RAM; a bigger ring would have cost 256 | settled |
+| **D132** | **A reversed module TX/RX pair is a rewire, not a devicetree fix.** `CTRLA.TXPO` puts TxD on `PAD[0]` under every encoding — only RTS/CTS/XCK move — while `RXPO` may select any of `PAD[0..3]` (SERCOM USART Control A; Microchip KB-000007252 states it outright: "Tx pin can only be PAD[0]"). So SERCOM0's transmitter is always PA04. **MCLR is wired to PB04**, chosen because `portb` is already instantiated for the lamp and button, so a reset line costs a pin and no new GPIO device; PA06/PA07 are physically closer but `porta` is deliberately left disabled | settled |
+| **D133** | **Every module ships on the latest released RNWF02 firmware (ADR-0025), currently 3.1.0, revision `58a15dc2`** — the revision `rnwf_at_cmds.h` was written against. The shipped 2.0.0 has no `+CFGCP` (`ERROR:0.3`, unknown command, where existing commands answer `ERROR:0.5`), which D62 requires and ADR-0012's provisioning plan depends on, and it lacks the KRACK (CVE-2017-13079/13081) and TLS renegotiation (CVE-2009-3555) fixes. Recorded honestly: 2.0.0 *does* work for the connect path — every command the script issues is present — so the case rests on the CVEs and `+CFGCP`, not on necessity. Enforced mechanically by `probe_rnwf02.py --require-version`, which exits 3 on a mismatch | settled |
+| **D134** | **DFU on macOS goes through a pyftdi shim that keeps Microchip's protocol code (ADR-0026).** Their `do_dfu.py` branches on Windows and Linux only — `modprobe`, `udevadm`, `/dev/ttyUSB*` — and needs the proprietary D2XX driver. `firmware/tools/rnwf02_dfu_mac.py` imports their `dfu.py` unmodified and replaces only the transport, preserving their verify-before-erase ordering so a failed DFU entry writes nothing. Vendor binaries are never committed: `fetch-rnwf02-firmware.sh` carries URLs and SHA-256 instead. On Windows or Linux, use Microchip's tool directly | settled |
+| **D135** | **`test module` is the bring-up liveness check, and needs no configuration at all.** `test wifi` (D122) demands an SSID and a reachable broker before it reports anything, so during bring-up it answers a question nobody asked. `test module` resets the module and waits for `+BOOT`, which proves **both** directions in one exchange — the module only reboots if it heard us, and the banner only arrives if we can hear it. On failure the received-byte count separates "nothing is arriving at all" from "arriving but not parsing", which are a wiring fault and a baud fault respectively and used to read identically | settled |
+| **D136** | **`TMO_BOOT_MS` is 10 s, from measurement rather than taste.** A real RNWF02PC on 3.1.0 takes **3849/3894/3959/4049/4059 ms** to emit `+BOOT` over five consecutive runs — warm, on a good bench supply — so the original 5 s left ~26 % headroom on a step whose spurious failure drops the client into backoff and delays the link for nothing (Rule 4: a false "module is dead" is worse than a slower true one). Nothing but hardware would have found it: every simulated run looked fine because `fake_rnwf02.py` answers instantly | settled |
+| **D137** | **The client turns command echo off (`ATE0`) as its first script step.** The module echoes every command back and the setting does not survive a reset, so this is sent after each `+BOOT`. Documented in the specification we cite — Serial Interface / Basic Commands / E, `ATE<N>`, 0 = "Turn off character echo", page 18 of revision `58a15dc2` — and verified on 2.0.0 and 3.1.0. Worst consequence first: each echoed command arrives as an unparseable line, so `lines_dropped` climbed on a **healthy** run, and that counter exists to mean something is wrong (D77). It also doubles receive traffic during a command burst, and it is what produces the bare `>` prompt the module emits after each response with no CR or LF, which otherwise prefixes the next assembled line. That prompt appears nowhere in the specification — searched, not assumed | settled |
 
 ---
 
@@ -402,7 +409,8 @@ and `.venv/` are gitignored siblings of `firmware/` (ADR-0014).
 ```
 wigwag/
 ├── CLAUDE.md  JOURNAL.md  CONTEXT.md  README.md
-├── docs/{PLAN.md, adr/, upstreaming-to-zephyr.md, usb-serial-and-bootloader.md}
+├── docs/{PLAN.md, adr/, upstreaming-to-zephyr.md, usb-serial-and-bootloader.md,
+│         module-firmware-dfu.md}
 ├── host/
 │   ├── wigwagd/{state,protocol,config,listener,publisher,daemon,cli,paths}.py
 │   ├── hooks/{wg-notify, wg-notify.ps1}   settings.hooks.json
@@ -415,11 +423,19 @@ wigwag/
 │   │                                      lineedit, link, transport, rnwf_at/rnwf_uart
 │   ├── tests/                             host unit tests, plain clang: make -C firmware/tests
 │   ├── modules/pic32cm-pl-nvmctrl/        out-of-tree flash driver (ADR-0017)
-│   ├── boards/pic32cm_pl10_cnano.overlay  TCC0 PWM (D49), SERCOM0, WDT, RSTC, NVMCTRL, lamps, SW0
+│   ├── boards/pic32cm_pl10_cnano.overlay  TCC0 PWM (D49), SERCOM0 at 230400 (D131), WDT, RSTC,
+│   │                                      NVMCTRL, lamps, SW0
+│   ├── boards/bringup_rx_only.overlay     listen-only variant: un-muxes TX so a reversed pair
+│   │                                      cannot fight the module's own output (D132)
 │   ├── dts/bindings/                      wigwag,lamps (D91)
 │   ├── patches/                           the one local patch to the pinned tree (D73)
 │   ├── prj.conf  prj_stacks.conf  credentials.conf.example  west.yml
-│   └── sim/fake_rnwf02.py
+│   ├── sim/fake_rnwf02.py                 the fake module (ADR-0015)
+│   ├── sim/probe_rnwf02.py                talks to the *real* module from the host; the
+│   │                                      pre-ship firmware gate lives here (D133)
+│   └── tools/                             fetch-rnwf02-firmware.sh (URLs + SHA-256, vendor
+│                                          binaries never committed) and rnwf02_dfu_mac.py
+│                                          (DFU via pyftdi, D134). vendor/ is gitignored
 ├── enclosure/                             Phase 4, empty
 └── .claude/skills/journal/
 ```
@@ -490,11 +506,18 @@ Both Phase 0 loose ends are closed: the work is committed (D16), and the state h
     14 presses, no duplicates, long-hold at 3 s — but **polled rather than interrupt-driven**
     (D86), since PL10 has no `eic` node. The watchdog is done too, and demonstrated by wedging the
     render thread on purpose.
-18. Hardware bring-up: `EV10P22A` + `EV72E72A`, five jumpers (TX, RX, MCLR, 3V3, GND).
-    **The only Phase 2 item still outstanding**, blocked on the `EV72E72A`. Everything to date runs
-    against `sim/fake_rnwf02.py`; it settles whether the real module honours `AT+MQTTLWT` and how it
-    escapes quotes inside quoted AEC fields (which decides whether the JSON `wigwag/state` payload is
-    safe to parse as-is).
+18. ⚠️ Hardware bring-up: `EV10P22A` + `EV72E72A`, four jumpers — TX, RX, MCLR (PB04, D132) and a
+    common ground, with 3V3 from the Nano and `JP200` on `J201-2/J201-3`.
+    **The AT link works on real hardware** (2026-08-18): `test module` resets the module and gets
+    `+BOOT` in ~3.9 s, and `test wifi` walks four request/response round trips before it needs a real
+    network. Both modules were updated to firmware **3.1.0** first (ADR-0025), which is what makes
+    `rnwf_at_cmds.h` correct against the silicon rather than against a newer specification than the
+    silicon ran (D133).
+    **Still outstanding, and now the only part of the Wi-Fi path never exercised on silicon:**
+    association, DHCP, the broker connect, and the two questions this item exists to settle — whether
+    the real module honours `AT+MQTTLWT`, and how it escapes quotes inside quoted AEC fields, which
+    decides whether the JSON `wigwag/state` payload is safe to parse as-is. Both need a real SSID and
+    a reachable broker.
 
 **Added beyond the original plan**, all built and on hardware — see the decision register:
 
@@ -549,6 +572,11 @@ Both Phase 0 loose ends are closed: the work is committed (D16), and the state h
 
 Debuggers already on hand (PICkit 5, PICkit Basic, Atmel-ICE, J-Link) all work via pyOCD/J-Link.
 
+**Bench item, not on the BOM: a 3.3 V FTDI adapter** (FT232R proven). Required for module firmware
+updates, and it has to be **FTDI specifically** — DFU entry is a 66-sample pattern bit-banged on
+three lines, which a CP2102 or CH340 cannot do, and neither can the add-on board's own MCP2200
+(D134). The same adapter doubles as the way to talk AT to a module with no MCU involved.
+
 ---
 
 ## Verification
@@ -559,6 +587,11 @@ Debuggers already on hand (PICkit 5, PICkit Basic, Atmel-ICE, J-Link) all work v
 - **Firmware, no module:** `fake_rnwf02.py` on the host against the live broker, driving the real
   cnano over SERCOM0 (ADR-0015). The AT core's parser and state machine additionally unit-test
   under plain clang with no hardware and no Zephyr.
+- **Module link, no network:** `test module` on the console (D135). It resets the module and waits for
+  `+BOOT`, needs no settings at all, and proves both directions in one exchange. Zero received bytes
+  means a wiring or power fault; bytes with no `+BOOT` means a baud or framing fault.
+- **Module firmware gate (pre-ship, ADR-0025):** `probe_rnwf02.py --require-version 3.1.0` on every
+  module before it is fitted, exiting 3 on a mismatch. Procedure in `docs/module-firmware-dfu.md`.
 - **D49 gate:** a breathing LED on PL10 hardware proves TCC PWM before any layout is committed.
 - **Footprint gate:** `ram_report` ≤ 8 KB with margin, recorded per milestone.
 - **Hook safety:** hooks emit nothing on stdout and `exit 0` with the daemon stopped.

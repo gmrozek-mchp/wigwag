@@ -173,8 +173,41 @@ RAM **5 272 B / 64.36 %**, flash **36 688 B / 59.71 %**. 11 162 firmware checks,
 
 - `test wifi` end to end against a real network and broker, now that the link and the module are both
   proven. The one thing still untested on hardware is the Wi-Fi and MQTT path itself.
-- Consider having the client send `ATE0` at startup: the module echoes every command back, so the
-  firmware currently pays twice for each one on a 230400 line it shares with nothing else.
+
+### Echo off, and the plan caught up
+
+**`ATE0` is now the first script step**, sent after every `+BOOT` because the setting does not
+persist. Not adopted on the strength of the module having accepted it — checked against the
+specification that ships inside the 3.1.0 package (`doc/microchip_rnwf02.pdf`, Serial Interface /
+Basic Commands / E: `ATE<N>`, 0 = "Turn off character echo", page 18 of revision `58a15dc2`), which is
+the citation `rnwf_at_cmds.h` demands before a string goes into it.
+
+The reason that matters most is not bandwidth: **echo made a healthy run look broken.** Every echoed
+command arrives as an unparseable line, so `lines_dropped` climbed on a good connect — and that
+counter was deliberately split from `aecs_ignored` so it would mean "something is wrong" (D77). Echo
+made it lie. It also doubles receive traffic during a command burst, and it is what produces the bare
+`>` prompt the module emits after each response with no CR or LF, which otherwise prefixes the next
+assembled line. **That prompt appears nowhere in the specification** — searched, not assumed — so
+nothing should be written to depend on it.
+
+The script is now `echo off` → `set error verbosity` → the rest, and step 0 keeps the name "module
+responding", because that is still what its failure means. One test failed on the change (`second
+command was 'ATE0'`) and now asserts the order deliberately, with a third check that verbosity
+follows.
+
+`docs/PLAN.md` brought up to date in the same pass: **D131–D137** for today's decisions, phase 2 item
+18 rewritten (the AT link works; what remains is association, DHCP and the broker), the two new ADRs
+cited, `test module` and the pre-ship firmware gate added to Verification, the FTDI adapter recorded
+as a required bench item — FTDI *specifically*, since a CP2102 or CH340 cannot bit-bang the DFU
+pattern — and the repo layout given the new tools.
+
+RAM **5 272 B / 64.36 %**, flash **36 748 B / 59.81 %**. 11 166 firmware checks, 0 failures.
+
+**Still to confirm on hardware**
+
+- That `lines_dropped` really is 0 through a connect attempt now. The console was held by a serial
+  terminal when this was flashed, so echo-off is asserted by unit test and by the specification, not
+  yet seen with my own eyes on the wire.
 
 ---
 

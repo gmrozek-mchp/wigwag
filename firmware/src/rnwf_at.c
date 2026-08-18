@@ -110,9 +110,18 @@ static size_t bld(struct rnwf_at *at, const char *fmt, ...)
 	return (size_t)n;
 }
 
+static size_t step_echo_off(struct rnwf_at *at)
+{
+	/*
+	 * Before verbosity, because until this lands every command we send comes straight back at us
+	 * and is counted as a dropped line. See RNWF_AT_ECHO_OFF.
+	 */
+	return bld(at, "%s", RNWF_AT_ECHO_OFF);
+}
+
 static size_t step_verbosity(struct rnwf_at *at)
 {
-	/* First, so that every later error is ERROR:<code> and not vendor prose. */
+	/* Early, so that every later error is ERROR:<code> and not vendor prose. */
 	return bld(at, "%s", RNWF_AT_SET_VERBOSITY);
 }
 
@@ -236,7 +245,8 @@ static size_t step_subscribe_brightness(struct rnwf_at *at)
 }
 
 static const struct at_step connect_script[] = {
-	{ step_verbosity,	NULL,			TMO_SHORT_MS,	"module responding" },
+	{ step_echo_off,	NULL,			TMO_SHORT_MS,	"module responding" },
+	{ step_verbosity,	NULL,			TMO_SHORT_MS,	"set error verbosity" },
 	{ step_ssid,		NULL,			TMO_SHORT_MS,	"set ssid" },
 	{ step_sec,		NULL,			TMO_SHORT_MS,	"set security type" },
 	{ step_cred,		NULL,			TMO_SHORT_MS,	"set passphrase" },

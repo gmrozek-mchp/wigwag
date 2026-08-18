@@ -262,9 +262,16 @@ static void test_reset_then_boot_starts_script(void)
 	feed("\r+BOOT:RNWF02\r\n");
 	CHECK(at.state == RNWF_AT_ST_SCRIPT, "state %d after +BOOT", at.state);
 
-	/* Verbosity must be pinned before anything whose failure we would have to parse. */
-	CHECK(strcmp(fake.sent[1], RNWF_AT_SET_VERBOSITY) == 0, "second command was '%s'",
-	      fake.sent[1]);
+	/*
+	 * Order matters and is asserted, not assumed. Echo off first: until it lands the module replays
+	 * every command back at us and each replay is counted as a dropped line. Verbosity second, before
+	 * anything whose failure we would otherwise have to read as vendor prose.
+	 */
+	CHECK(strcmp(fake.sent[1], RNWF_AT_ECHO_OFF) == 0, "second command was '%s'", fake.sent[1]);
+
+	feed("OK\r\n");
+	CHECK(strcmp(fake.sent[2], RNWF_AT_SET_VERBOSITY) == 0, "third command was '%s'",
+	      fake.sent[2]);
 }
 
 /*
