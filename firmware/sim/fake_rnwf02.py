@@ -9,7 +9,7 @@ PL10 Curiosity Nano running the real firmware.
     python3 fake_rnwf02.py --pty --broker localhost
 
     # against real hardware over a USB-UART adapter
-    python3 fake_rnwf02.py --port /dev/cu.usbserial-XXXX --baud 115200 --broker localhost
+    python3 fake_rnwf02.py --port /dev/cu.usbserial-XXXX --baud 230400 --broker localhost
 
     # failure injection, which is the thing a real module will not do on demand
     python3 fake_rnwf02.py --pty --no-connack          # accept MQTTCONN, never acknowledge
@@ -430,7 +430,9 @@ def main() -> int:
     src = p.add_mutually_exclusive_group(required=True)
     src.add_argument("--pty", action="store_true", help="serve on a new PTY and print its path")
     src.add_argument("--port", help="serial device, e.g. /dev/cu.usbserial-XXXX")
-    p.add_argument("--baud", type=int, default=115200)
+    # The real module's factory default (DS70005544C Table 2-1), so the fake is wrong in the same
+    # direction as the hardware rather than in a direction of its own.
+    p.add_argument("--baud", type=int, default=230400)
     p.add_argument("--broker", default="localhost", help="fallback broker host")
     p.add_argument("--port-num", type=int, default=1883, help="fallback broker port")
     p.add_argument("--no-broker", action="store_true", help="do not touch a real broker")

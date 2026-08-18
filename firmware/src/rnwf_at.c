@@ -253,7 +253,11 @@ const char *rnwf_at_step_str(const struct rnwf_at *at)
 	if (at->state == RNWF_AT_ST_READY) {
 		return "connected";
 	}
-	if (at->state == RNWF_AT_ST_RESETTING) {
+	/*
+	 * Still the reset phase whether we are waiting or have already given up on it: until +BOOT
+	 * arrives, step 0 has not been attempted and must not be blamed.
+	 */
+	if (at->state == RNWF_AT_ST_RESETTING || !at->boot_seen) {
 		return "resetting the module";
 	}
 	if (at->step >= SCRIPT_LEN) {
@@ -538,6 +542,7 @@ static void handle_line(struct rnwf_at *at, const char *line)
 
 	if (line_is_aec(line, RNWF_AEC_BOOT, &args)) {
 		if (at->state == RNWF_AT_ST_RESETTING) {
+			at->boot_seen = true;
 			at->state = RNWF_AT_ST_SCRIPT;
 			at->step = 0;
 			run_script_from_current(at);
@@ -651,6 +656,7 @@ void rnwf_at_start(struct rnwf_at *at, uint32_t now_ms)
 	at->now_ms = now_ms;
 	at->state = RNWF_AT_ST_RESETTING;
 	at->step = 0;
+	at->boot_seen = false;
 	at->awaiting_ok = false;
 	at->awaiting_aec = NULL;
 	at->rx_len = 0;

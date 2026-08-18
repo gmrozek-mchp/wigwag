@@ -234,12 +234,23 @@
 /*
  * SERCOM0 as the module UART: PAD0 transmits, PAD1 receives, matching the board's own sercom1
  * console wiring (txpo = 0, rxpo = 1).
+ *
+ * **TX cannot be moved off PAD0.** CTRLA.TXPO selects only where XCK/RTS/CTS land; every encoding
+ * puts TxD on PAD[0] (SERCOM USART Control A, and Microchip KB-000007252 states it outright). RXPO
+ * *is* free to pick any of PAD[0..3]. So PA04 is always the transmitter here, and a module wired
+ * the other way round has to be rewired — there is no devicetree fix.
+ *
+ * 230400 because that is the module's factory default, not a choice: RNWF02 UART1 is "Default:
+ * 230,400 baud, 8N1, no flow control" (Wi-Fi Module Data Sheet DS70005544C, Table 2-1, pins 14 and
+ * 19), and the add-on board's own PC-companion instructions say the same (DS50003575C §3.3.1). At
+ * 115200 the firmware and a factory module are mutually deaf, which presents exactly like a
+ * miswired pair: AT+RST, no +BOOT, RESETTING -> BACKOFF forever.
  */
 &sercom0 {
 	compatible = "microchip,sercom-g1-uart";
 	#address-cells = <1>;
 	#size-cells = <0>;
-	current-speed = <115200>;
+	current-speed = <230400>;
 	data-bits = <8>;
 	parity = "none";
 	stop-bits = "1";

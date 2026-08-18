@@ -33,4 +33,13 @@ void rnwf_uart_poll(struct rnwf_at *at);
 /** Bytes lost to a full receive ring. Non-zero means the poll loop is not keeping up. */
 uint32_t rnwf_uart_overruns(void);
 
+/**
+ * Bytes the ISR has received since rnwf_uart_init(), counted before parsing.
+ *
+ * The bring-up discriminator: zero means nothing is arriving on the RX pin at all (wiring, power,
+ * or a module that never booted), while non-zero with no usable response means the bytes are
+ * arriving garbled (wrong baud, or the wrong UART on the module).
+ */
+uint32_t rnwf_uart_rx_bytes(void);
+
 #endif /* RNWF_UART_H */

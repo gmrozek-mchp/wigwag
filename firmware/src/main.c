@@ -29,8 +29,16 @@
 
 #include <string.h>
 
-/* 10 ms: fast enough to drain the receive ring well inside its 256-byte capacity at 115200. */
-#define AT_POLL_MS 10
+/*
+ * 5 ms, halved from 10 when the module UART went to its native 230400 (Rule 5: this costs no RAM,
+ * where a bigger ring would cost 256 bytes).
+ *
+ * The arithmetic, at 10 bits per frame: 230400 baud is 23 040 B/s, so 10 ms of back-to-back traffic
+ * is 230 bytes against RX_RING_SZ 256 — it fits, but the margin falls to 1.1x, and this poll is
+ * cooperative rather than real-time: it shares main() with console work and the wifi test. At 5 ms
+ * it is 115 bytes, restoring the 2.2x headroom the 115200 design had.
+ */
+#define AT_POLL_MS 5
 
 static struct rnwf_at at_client;
 static struct link link_state;
@@ -295,12 +303,31 @@ static void wifi_test_service(uint32_t now)
 	}
 
 	if (at_client.state == RNWF_AT_ST_BACKOFF) {
+		uint32_t rx_bytes = rnwf_uart_rx_bytes();
+
 		printk("test: FAIL at \"%s\" — timed out (%u ms)\n", rnwf_at_step_str(&at_client),
 		       elapsed);
-		printk("test:   %s\n",
-		       (at_client.step <= 4U)
-			       ? "no reply from the module, or the network did not accept us"
-			       : "the broker did not answer; check its address, port and that it is up");
+
+		/*
+		 * Say whether anything arrived at all before guessing at causes. A timeout with zero
+		 * received bytes is a different fault from a timeout with bytes that did not parse,
+		 * and during module bring-up it is the only distinction that matters.
+		 */
+		if (rx_bytes == 0U) {
+			printk("test:   rx 0 bytes — nothing at all is arriving on the module UART\n");
+			printk("test:   check power (VDD and its LED), ground, and that the module's "
+			       "TX reaches this board's RX pin\n");
+		} else {
+			printk("test:   rx %u bytes, %u dropped, %u overruns\n", rx_bytes,
+			       at_client.lines_dropped, rnwf_uart_overruns());
+			printk("test:   %s\n",
+			       (at_client.step <= 4U)
+				       ? "the module is talking but not answering; suspect the baud "
+					 "rate or framing"
+				       : "the broker did not answer; check its address, port and that "
+					 "it is up");
+		}
+
 		wifi_test.running = false;
 		return;
 	}

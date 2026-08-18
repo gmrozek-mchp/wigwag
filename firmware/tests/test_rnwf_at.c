@@ -260,6 +260,50 @@ static void test_reset_then_boot_starts_script(void)
 	      fake.sent[1]);
 }
 
+/*
+ * A module that never answers must be reported against the reset, not against the first command.
+ *
+ * Found during RNWF02 bring-up: `test wifi` on a board whose module UART could not transmit said
+ * FAIL at "module responding" — naming a command that had never been sent. step stays 0 through the
+ * reset phase, and the old step_str() only special-cased state == RESETTING, so the moment the
+ * timeout moved the client to BACKOFF the name became step 0's. The two failures a bring-up most
+ * needs to tell apart — "nothing is listening" and "the module rejected ATV3" — read identically.
+ */
+static void test_pre_boot_failure_is_not_blamed_on_step_zero(void)
+{
+	setup();
+	rnwf_at_start(&at, 0);
+	CHECK(strcmp(rnwf_at_step_str(&at), "resetting the module") == 0, "while resetting: '%s'",
+	      rnwf_at_step_str(&at));
+
+	/* No +BOOT: the boot wait times out and the client backs off, still at step 0. */
+	rnwf_at_tick(&at, 5001);
+	CHECK(at.state == RNWF_AT_ST_BACKOFF, "state %d", at.state);
+	CHECK(at.step == 0U, "step %u", at.step);
+	CHECK(strcmp(rnwf_at_step_str(&at), "resetting the module") == 0,
+	      "pre-boot timeout blamed on '%s'", rnwf_at_step_str(&at));
+
+	/* Once +BOOT *has* arrived, a step-0 failure really is step 0, and must say so. */
+	setup();
+	rnwf_at_start(&at, 0);
+	feed("\r+BOOT:RNWF02\r\n");
+	CHECK(at.boot_seen, "boot_seen not set by +BOOT");
+	CHECK(strcmp(rnwf_at_step_str(&at), "module responding") == 0, "after +BOOT: '%s'",
+	      rnwf_at_step_str(&at));
+
+	rnwf_at_tick(&at, 60000);
+	CHECK(at.state == RNWF_AT_ST_BACKOFF, "state %d after step timeout", at.state);
+	CHECK(strcmp(rnwf_at_step_str(&at), "module responding") == 0,
+	      "post-boot timeout blamed on '%s'", rnwf_at_step_str(&at));
+
+	/* And a retry re-arms it: the next attempt is a reset phase again, not step 0. */
+	rnwf_at_tick(&at, 120000);
+	CHECK(at.state == RNWF_AT_ST_RESETTING, "state %d after retry", at.state);
+	CHECK(!at.boot_seen, "boot_seen survived a restart");
+	CHECK(strcmp(rnwf_at_step_str(&at), "resetting the module") == 0, "on retry: '%s'",
+	      rnwf_at_step_str(&at));
+}
+
 static void test_leading_cr_aec_framing(void)
 {
 	/*
@@ -617,6 +661,7 @@ int main(void)
 	printf("rnwf_at host tests\n");
 
 	test_reset_then_boot_starts_script();
+	test_pre_boot_failure_is_not_blamed_on_step_zero();
 	test_subscribes_to_host_liveness();
 	test_keepalive_polls_while_ready();
 	test_silent_module_is_detected();

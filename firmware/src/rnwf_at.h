@@ -104,6 +104,18 @@ struct rnwf_at {
 
 	/* Connect script position and what the current step is waiting for. */
 	uint8_t step;
+
+	/*
+	 * Has the module confirmed a reboot (+BOOT) since the last rnwf_at_start()?
+	 *
+	 * Only rnwf_at_step_str() reads it, and only so a failure gets attributed to the right step.
+	 * step stays 0 across a reset-phase timeout, so without this a module that never answered at
+	 * all was reported as failing at "module responding" — naming a command that was never sent,
+	 * on a link that was never established. During bring-up that is the difference between "the
+	 * UART is miswired" and "the module refused ATV3" (Rule 4: fail-visible, and do not lie).
+	 */
+	bool boot_seen;
+
 	bool awaiting_ok;
 	const char *awaiting_aec;	/* NULL when the step completes on OK alone */
 	uint32_t deadline_ms;

@@ -2,11 +2,12 @@
  * Zephyr UART transport for the AT client.
  *
  * Receive is interrupt-driven into a bounded ring, drained by rnwf_uart_poll() in thread context.
- * Polled receive was considered and rejected: at 115200 baud a byte arrives every 87 us, and the
- * SERCOM has no deep FIFO, so a loop that also renders lamps would drop bytes mid-line.
+ * Polled receive was considered and rejected: at the module's 230400 a byte arrives every 43 us
+ * (87 us when this was written against 115200), and the SERCOM has no deep FIFO, so a loop that
+ * also renders lamps would drop bytes mid-line.
  *
  * Transmit is polled. An AT command is at most 273 bytes (rnwf_at_cmds.h), so the worst case blocks
- * its calling thread for about 24 ms at 115200. Tolerable while main() drives both the lamp and the
+ * its calling thread for about 12 ms at 230400. Tolerable while main() drives both the lamp and the
  * AT client — the visible effect is a stutter in the breathe during a connect burst — and it is the
  * concrete reason lamp rendering gets its own thread in lamp.c rather than sharing this one.
  *
@@ -38,11 +39,24 @@ static struct {
 	volatile uint16_t head;	/* written by the ISR */
 	volatile uint16_t tail;	/* read by the poll loop */
 	volatile uint32_t overruns;
+
+	/*
+	 * Every byte the ISR has ever seen, counted before any parsing can reject it (4 bytes).
+	 *
+	 * This is the bring-up question the rest of the diagnostics could not answer: "nothing
+	 * works" reads identically whether not one edge arrived on the RX pin or the line is alive
+	 * and the baud is wrong. Zero here is a wiring or power fault; non-zero with no recognised
+	 * response is a framing or speed fault. Counted in the ISR rather than in the parser so
+	 * that even a byte lost to a full ring is still counted as having arrived.
+	 */
+	volatile uint32_t bytes;
 } rx;
 
 static void rx_push(uint8_t byte)
 {
 	uint16_t next = (uint16_t)((rx.head + 1U) % RX_RING_SZ);
+
+	rx.bytes++;
 
 	if (next == rx.tail) {
 		rx.overruns++;
@@ -103,6 +117,7 @@ int rnwf_uart_init(struct rnwf_at *at, const struct rnwf_at_config *cfg,
 	rx.head = 0;
 	rx.tail = 0;
 	rx.overruns = 0;
+	rx.bytes = 0;
 
 	rnwf_at_init(at, cfg, &io, cb);
 
@@ -137,4 +152,9 @@ void rnwf_uart_poll(struct rnwf_at *at)
 uint32_t rnwf_uart_overruns(void)
 {
 	return rx.overruns;
+}
+
+uint32_t rnwf_uart_rx_bytes(void)
+{
+	return rx.bytes;
 }
