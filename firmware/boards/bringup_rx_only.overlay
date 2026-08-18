@@ -1,0 +1,41 @@
+/*
+ * Bring-up diagnostic: listen on PA05, drive nothing. Answers "is the module's TX on PA05 or PA04?"
+ * without ever transmitting.
+ *
+ *   west build -b pic32cm_pl10_cnano firmware -- \
+ *       -DEXTRA_DTC_OVERLAY_FILE=boards/bringup_rx_only.overlay
+ *
+ * WHY THIS EXISTS. If the pair is reversed, PA04 -- which is always the transmitter, because
+ * CTRLA.TXPO puts TxD on PAD[0] for every encoding (KB-000007252) -- is wired to the module's
+ * UART1_TX, which is also an output. The AT client then retries AT+RST forever and every retry is
+ * two 3.3 V drivers fighting on one net. Dropping PA04 from the pinmux leaves it an unmuxed,
+ * high-impedance PORTA pin, so the wrong orientation costs nothing and the right one still works.
+ *
+ * HOW TO READ THE RESULT. Flash this, watch the console, then reset the module -- briefly ground
+ * MCLR (PB04's wire; the add-on board pulls it up with R231 10k, DS50003575C Figure 5-4) or
+ * power-cycle it. Then:
+ *
+ *   +BOOT arrives, the AT client leaves RESETTING   PA05 is on the module's UART1_TX.
+ *                                                  The pair is the right way round.
+ *   nothing ever arrives, RESETTING -> BACKOFF      PA05 is on the module's UART1_RX (an input,
+ *                                                  hence the silence). Swap the two wires.
+ *
+ * The client cannot get past the first exchange in this build -- its AT+RST goes nowhere -- so
+ * timeouts and a rising error count are expected and prove nothing either way. The single bit of
+ * information wanted here is whether any byte at all arrives on PA05.
+ *
+ * Delete-on-sight material? No: keep it. Every board respin asks this same question once.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/*
+ * Overrides group1's pinmux from the main overlay -- same property, later file wins. PA04 is simply
+ * absent rather than reassigned, which is what makes it high-Z: nothing claims it, and porta is
+ * status = "disabled" so no GPIO driver takes it either.
+ */
+&sercom0_uart_default {
+	group1 {
+		pinmux = <PA5C_SERCOM0_PAD1>;
+	};
+};

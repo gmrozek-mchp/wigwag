@@ -13,6 +13,8 @@ host/.env
 
 # --- build output ---
 build/
+# Side-by-side west build dirs, e.g. build-rxonly/ for the listen-only bring-up variant.
+build-*/
 twister-out*/
 enclosure/stl/
 __pycache__/
