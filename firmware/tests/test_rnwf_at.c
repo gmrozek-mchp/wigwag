@@ -857,13 +857,68 @@ static void test_publish_only_when_ready(void)
 
 	CHECK(rnwf_at_publish(&at, "wigwag/button", "{\"event\":\"press\"}", false) == 0,
 	      "publish failed when ready");
+	/*
+	 * The payload's own quotes are escaped. This assertion previously encoded the *malformed*
+	 * command -- a JSON payload dropped raw inside a quoted field -- which is what shipped until the
+	 * builder started escaping. The AT Command Reference's "Strings" section requires it.
+	 */
 	CHECK(strcmp(last_sent(),
-		     "AT+MQTTPUB=0,0,0,\"wigwag/button\",\"{\"event\":\"press\"}\"") == 0,
+		     "AT+MQTTPUB=0,0,0,\"wigwag/button\",\"{\\\"event\\\":\\\"press\\\"}\"") == 0,
 	      "publish text was '%s'", last_sent());
 
 	CHECK(rnwf_at_publish(&at, "wigwag/online", "1", true) == 0, "retained publish failed");
 	CHECK(strcmp(last_sent(), "AT+MQTTPUB=0,0,1,\"wigwag/online\",\"1\"") == 0,
 	      "retained publish text was '%s'", last_sent());
+}
+
+/*
+ * Every quoted argument is escaped per the specification's table, and a value that cannot fit escaped
+ * is refused rather than truncated -- a half-formed AT command can be a *different* valid command.
+ */
+static void test_quoted_arguments_are_escaped(void)
+{
+	static char huge[400];
+	struct rnwf_at_config c = cfg;
+	struct rnwf_at_io io = { .write = fake_write, .user = &fake };
+	size_t i;
+
+	/* A passphrase containing both characters the module would otherwise re-interpret. */
+	c.passphrase = "pa\"ss\\word";
+	memset(&fake, 0, sizeof(fake));
+	rnwf_at_init(&at, &c, &io, NULL);
+	rnwf_at_start(&at, 0);
+	feed("\r+BOOT:RNWF02\r\n");
+
+	while (at.state == RNWF_AT_ST_SCRIPT && strstr(last_sent(), "=3,") == NULL) {
+		answer_module(last_sent());
+	}
+	CHECK(strcmp(last_sent(), "AT+WSTAC=3,\"pa\\\"ss\\\\word\"") == 0,
+	      "escaped passphrase sent as '%s'", last_sent());
+
+	/* Control characters use the documented sequences, not raw bytes. */
+	memset(&fake, 0, sizeof(fake));
+	c.passphrase = "a\tb\r\nc";
+	rnwf_at_init(&at, &c, &io, NULL);
+	rnwf_at_start(&at, 0);
+	feed("\r+BOOT:RNWF02\r\n");
+	while (at.state == RNWF_AT_ST_SCRIPT && strstr(last_sent(), "=3,") == NULL) {
+		answer_module(last_sent());
+	}
+	CHECK(strcmp(last_sent(), "AT+WSTAC=3,\"a\\tb\\r\\nc\"") == 0,
+	      "escaped control characters sent as '%s'", last_sent());
+
+	/* Escaping doubles length, so a value inside the spec's limit can still overflow the buffer. */
+	for (i = 0; i < sizeof(huge) - 1U; i++) {
+		huge[i] = '"';
+	}
+	huge[sizeof(huge) - 1U] = '\0';
+
+	setup();
+	bring_up();
+	CHECK(rnwf_at_publish(&at, "wigwag/button", huge, false) == -1,
+	      "published a payload that cannot fit escaped");
+	CHECK(strcmp(last_sent(), "AT+MQTTSUB=\"wigwag/host_online\",1") != 0 ||
+	      strstr(last_sent(), huge) == NULL, "a truncated command was sent");
 }
 
 static void test_oversized_line_dropped_whole(void)
@@ -1097,6 +1152,7 @@ int main(void)
 	test_backoff_grows_and_caps();
 	test_link_down_while_ready_reports_unlinked();
 	test_publish_only_when_ready();
+	test_quoted_arguments_are_escaped();
 	test_oversized_line_dropped_whole();
 	test_junk_is_survivable();
 

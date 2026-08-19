@@ -117,6 +117,132 @@ static size_t bld(struct rnwf_at *at, const char *fmt, ...)
 	return (size_t)n;
 }
 
+
+/* ------------------------------------------------------- escaped composition */
+
+/*
+ * A tiny append-only builder over at->tx, so a quoted argument can be *escaped* as it is written.
+ *
+ * bld() cannot do this: it formats with %s, which copies a passphrase or a JSON payload verbatim into
+ * a quoted field. The specification is explicit that an ASCII string is enclosed in double quotes and
+ * that NUL, tab, backslash, double quote, CR, LF, bell, backspace, vertical tab, form feed and escape
+ * are all written as escape sequences (AT Command Reference, "Strings"). Sending them raw produces a
+ * command whose quoting the module resolves differently from what we meant — and MQTT payloads are
+ * JSON, so `{"event":"press"}` inside a quoted field was malformed on every publish.
+ *
+ * Escaping can double a string's length, and the TX buffer is sized for the specification's maxima
+ * rather than for worst-case escaping, so overflow is expected rather than exceptional. It is handled
+ * the same way bld() handles truncation: nothing is sent. A half-formed AT command is worse than a
+ * refused one, because it can be a *different*, valid command.
+ */
+struct bldr {
+	struct rnwf_at *at;
+	size_t len;
+	bool ok;
+};
+
+static void b_init(struct bldr *b, struct rnwf_at *at)
+{
+	b->at = at;
+	b->len = 0;
+	b->ok = true;
+	at->tx[0] = '\0';
+}
+
+static void b_ch(struct bldr *b, char c)
+{
+	if (!b->ok) {
+		return;
+	}
+
+	/* Leave room for the NUL; at_send_raw() appends CRLF separately. */
+	if (b->len + 1U >= sizeof(b->at->tx)) {
+		b->ok = false;
+		return;
+	}
+
+	b->at->tx[b->len++] = c;
+}
+
+static void b_raw(struct bldr *b, const char *s)
+{
+	size_t i;
+
+	for (i = 0; s[i] != '\0'; i++) {
+		b_ch(b, s[i]);
+	}
+}
+
+static void b_int(struct bldr *b, uint32_t v)
+{
+	char digits[11];
+	size_t n = 0;
+
+	if (v == 0U) {
+		b_ch(b, '0');
+		return;
+	}
+
+	while (v > 0U && n < sizeof(digits)) {
+		digits[n++] = (char)('0' + (v % 10U));
+		v /= 10U;
+	}
+
+	while (n > 0U) {
+		b_ch(b, digits[--n]);
+	}
+}
+
+/** Append a quoted, escaped ASCII string argument, including its surrounding quotes. */
+static void b_qstr(struct bldr *b, const char *s)
+{
+	size_t i;
+
+	b_ch(b, '"');
+
+	for (i = 0; s != NULL && s[i] != '\0'; i++) {
+		char c = s[i];
+		char esc = '\0';
+
+		/* The specification's table, in full. NUL cannot appear in a C string, so it is absent. */
+		switch (c) {
+		case '\t': esc = 't'; break;
+		case '\\': esc = '\\'; break;
+		case '"':  esc = '"'; break;
+		case '\r': esc = 'r'; break;
+		case '\n': esc = 'n'; break;
+		case '\a': esc = 'a'; break;
+		case '\b': esc = 'b'; break;
+		case '\v': esc = 'v'; break;
+		case '\f': esc = 'f'; break;
+		case 0x1B: esc = 'e'; break;
+		default: break;
+		}
+
+		if (esc != '\0') {
+			b_ch(b, '\\');
+			b_ch(b, esc);
+		} else {
+			b_ch(b, c);
+		}
+	}
+
+	b_ch(b, '"');
+}
+
+/** Finish: returns the length, or 0 if anything did not fit — the "skip me" convention. */
+static size_t b_done(struct bldr *b)
+{
+	if (!b->ok) {
+		b->at->tx[0] = '\0';
+		return 0;
+	}
+
+	b->at->tx[b->len] = '\0';
+
+	return b->len;
+}
+
 static size_t step_echo_off(struct rnwf_at *at)
 {
 	/*
@@ -134,7 +260,16 @@ static size_t step_verbosity(struct rnwf_at *at)
 
 static size_t step_ssid(struct rnwf_at *at)
 {
-	return bld(at, "%s=%d,\"%s\"", RNWF_AT_WSTAC, RNWF_WSTAC_SSID, at->cfg->ssid);
+	struct bldr b;
+
+	b_init(&b, at);
+	b_raw(&b, RNWF_AT_WSTAC);
+	b_raw(&b, "=");
+	b_int(&b, RNWF_WSTAC_SSID);
+	b_raw(&b, ",");
+	b_qstr(&b, at->cfg->ssid);
+
+	return b_done(&b);
 }
 
 static size_t step_sec(struct rnwf_at *at)
@@ -148,8 +283,18 @@ static size_t step_cred(struct rnwf_at *at)
 		return 0;	/* open network */
 	}
 
-	return bld(at, "%s=%d,\"%s\"", RNWF_AT_WSTAC, RNWF_WSTAC_CREDENTIALS,
-		   at->cfg->passphrase);
+	{
+		struct bldr b;
+
+		b_init(&b, at);
+		b_raw(&b, RNWF_AT_WSTAC);
+		b_raw(&b, "=");
+		b_int(&b, RNWF_WSTAC_CREDENTIALS);
+		b_raw(&b, ",");
+		b_qstr(&b, at->cfg->passphrase);
+
+		return b_done(&b);
+	}
 }
 
 static size_t step_wifi_up(struct rnwf_at *at)
@@ -159,8 +304,16 @@ static size_t step_wifi_up(struct rnwf_at *at)
 
 static size_t step_broker_host(struct rnwf_at *at)
 {
-	return bld(at, "%s=%d,\"%s\"", RNWF_AT_MQTTC, RNWF_MQTTC_BROKER_ADDR,
-		   at->cfg->broker_host);
+	struct bldr b;
+
+	b_init(&b, at);
+	b_raw(&b, RNWF_AT_MQTTC);
+	b_raw(&b, "=");
+	b_int(&b, RNWF_MQTTC_BROKER_ADDR);
+	b_raw(&b, ",");
+	b_qstr(&b, at->cfg->broker_host);
+
+	return b_done(&b);
 }
 
 static size_t step_broker_port(struct rnwf_at *at)
@@ -171,7 +324,16 @@ static size_t step_broker_port(struct rnwf_at *at)
 
 static size_t step_client_id(struct rnwf_at *at)
 {
-	return bld(at, "%s=%d,\"%s\"", RNWF_AT_MQTTC, RNWF_MQTTC_CLIENT_ID, at->cfg->client_id);
+	struct bldr b;
+
+	b_init(&b, at);
+	b_raw(&b, RNWF_AT_MQTTC);
+	b_raw(&b, "=");
+	b_int(&b, RNWF_MQTTC_CLIENT_ID);
+	b_raw(&b, ",");
+	b_qstr(&b, at->cfg->client_id);
+
+	return b_done(&b);
 }
 
 static size_t step_username(struct rnwf_at *at)
@@ -180,7 +342,18 @@ static size_t step_username(struct rnwf_at *at)
 		return 0;
 	}
 
-	return bld(at, "%s=%d,\"%s\"", RNWF_AT_MQTTC, RNWF_MQTTC_USERNAME, at->cfg->username);
+	{
+		struct bldr b;
+
+		b_init(&b, at);
+		b_raw(&b, RNWF_AT_MQTTC);
+		b_raw(&b, "=");
+		b_int(&b, RNWF_MQTTC_USERNAME);
+		b_raw(&b, ",");
+		b_qstr(&b, at->cfg->username);
+
+		return b_done(&b);
+	}
 }
 
 static size_t step_password(struct rnwf_at *at)
@@ -189,7 +362,18 @@ static size_t step_password(struct rnwf_at *at)
 		return 0;
 	}
 
-	return bld(at, "%s=%d,\"%s\"", RNWF_AT_MQTTC, RNWF_MQTTC_PASSWORD, at->cfg->password);
+	{
+		struct bldr b;
+
+		b_init(&b, at);
+		b_raw(&b, RNWF_AT_MQTTC);
+		b_raw(&b, "=");
+		b_int(&b, RNWF_MQTTC_PASSWORD);
+		b_raw(&b, ",");
+		b_qstr(&b, at->cfg->password);
+
+		return b_done(&b);
+	}
 }
 
 static size_t step_keep_alive(struct rnwf_at *at)
@@ -213,7 +397,18 @@ static size_t step_lwt(struct rnwf_at *at)
 		return 0;
 	}
 
-	return bld(at, "%s=0,1,\"%s\",\"0\"", RNWF_AT_MQTT_LWT, at->cfg->online_topic);
+	{
+		struct bldr b;
+
+		b_init(&b, at);
+		b_raw(&b, RNWF_AT_MQTT_LWT);
+		b_raw(&b, "=0,1,");
+		b_qstr(&b, at->cfg->online_topic);
+		b_raw(&b, ",");
+		b_qstr(&b, "0");
+
+		return b_done(&b);
+	}
 }
 
 static size_t step_mqtt_connect(struct rnwf_at *at)
@@ -221,10 +416,24 @@ static size_t step_mqtt_connect(struct rnwf_at *at)
 	return bld(at, "%s", RNWF_AT_MQTT_CONNECT);
 }
 
+/* All three subscriptions differ only by topic. QoS 1: ADR-0003 wants the retained state once. */
+static size_t sub_cmd(struct rnwf_at *at, const char *topic)
+{
+	struct bldr b;
+
+	b_init(&b, at);
+	b_raw(&b, RNWF_AT_MQTT_SUB);
+	b_raw(&b, "=");
+	b_qstr(&b, topic);
+	b_raw(&b, ",1");
+
+	return b_done(&b);
+}
+
 static size_t step_subscribe(struct rnwf_at *at)
 {
 	/* QoS 1: ADR-0003 needs the retained state delivered reliably, once. */
-	return bld(at, "%s=\"%s\",1", RNWF_AT_MQTT_SUB, at->cfg->state_topic);
+	return sub_cmd(at, at->cfg->state_topic);
 }
 
 static size_t step_subscribe_host(struct rnwf_at *at)
@@ -238,7 +447,7 @@ static size_t step_subscribe_host(struct rnwf_at *at)
 		return 0;
 	}
 
-	return bld(at, "%s=\"%s\",1", RNWF_AT_MQTT_SUB, at->cfg->host_online_topic);
+	return sub_cmd(at, at->cfg->host_online_topic);
 }
 
 static size_t step_subscribe_brightness(struct rnwf_at *at)
@@ -248,7 +457,7 @@ static size_t step_subscribe_brightness(struct rnwf_at *at)
 	}
 
 	/* QoS 1, retained on the broker, so the device adopts the desk's setting on every connect. */
-	return bld(at, "%s=\"%s\",1", RNWF_AT_MQTT_SUB, at->cfg->brightness_topic);
+	return sub_cmd(at, at->cfg->brightness_topic);
 }
 
 static const struct at_step connect_script[] = {
@@ -917,10 +1126,27 @@ int rnwf_at_publish(struct rnwf_at *at, const char *topic, const char *payload, 
 		return -1;
 	}
 
-	/* AT+MQTTPUB=<DUP>,<QOS>,<RETAIN>,<TOPIC_NAME_ID>,<TOPIC_PAYLOAD> */
-	if (bld(at, "%s=0,0,%d,\"%s\",\"%s\"", RNWF_AT_MQTT_PUB, retain ? 1 : 0, topic,
-		payload) == 0U) {
-		return -1;
+	/*
+	 * AT+MQTTPUB=<DUP>,<QOS>,<RETAIN>,<TOPIC_NAME_ID>,<TOPIC_PAYLOAD>
+	 *
+	 * The payload is JSON, so it is full of double quotes and must be escaped. Built rather than
+	 * formatted for exactly that reason; before this it was sent raw and every publish was malformed.
+	 */
+	{
+		struct bldr b;
+
+		b_init(&b, at);
+		b_raw(&b, RNWF_AT_MQTT_PUB);
+		b_raw(&b, "=0,0,");
+		b_int(&b, retain ? 1U : 0U);
+		b_raw(&b, ",");
+		b_qstr(&b, topic);
+		b_raw(&b, ",");
+		b_qstr(&b, payload);
+
+		if (b_done(&b) == 0U) {
+			return -1;
+		}
 	}
 
 	at_send_raw(at, at->tx);

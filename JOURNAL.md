@@ -274,6 +274,92 @@ RAM **5 296 B / 64.65 %**, flash **37 920 B / 61.72 %**. **11 212** firmware che
 new, covering each rung's boundary: a bare reset sends exactly one command, a network-only run reaches
 no `AT+MQTT`, a scan configures no station, and a retry stays the rung it started as.
 
+### The whole path works, and the three bugs between here and there
+
+`test broker` now completes: association, DHCP, broker connect, CONNACK and all three subscribes,
+against a real module on 3.1.0 and a real mosquitto on another host. **Phase 2 item 18 is closed for
+the Wi-Fi path.** Every one of the three faults in the way was invisible to all 11 000 checks, and
+each needed a different witness.
+
+**`set sec 3` never reached the module** (D140). `module_cfg` borrows *pointers* into `settings` for
+strings but takes *copies* of the scalars, and `module_cfg_from_settings()` ran only at boot. So `ssid`
+and `pass` tracked console edits and `sec` and `port` silently did not. The module went looking for an
+*open* network called riverside, rejected every encrypted AP, and burned its 10 s connection timeout.
+
+What makes this one worth remembering is that **it was invisible to every instrument I had built** —
+the received-byte counter, the honest failure message, the event reporter, the passphrase length. All
+four read `settings`, so all four confirmed the intent rather than the wire. The witness that found it
+in one shot was the module's own MAC log on UART2_TX (J208): `check_bss_capability_info: privacy fail,
+op_mode 0` against every beacon, and no association attempt anywhere in 13.5 s. **Ask the device
+before theorising**; I spent three rounds inferring from timing instead.
+
+**Subscribes were pipelined on their OK** (D138). The spec's rule is the one `rnwf_at.c`'s own header
+quotes — OK means *accepted* — and the SUBACK arrives later as `+MQTTSUB:<REASON_CODE>`. Sending the
+next `AT+MQTTSUB` while one was outstanding got it refused *by the module* with `ERROR:8.0`, so it
+never reached the broker at all. mosquitto's log was the witness: one SUBSCRIBE, one SUBACK, then
+silence until the keep-alive PINGREQ. Which subscribe lost depended on broker latency, which is why
+the failure moved between the second and third and looked non-deterministic.
+
+**A link-local address satisfied "associate and get an IP"** (D139). With IPv6 SLAAC the module
+announces `fe80::` the instant the link is up — seen as `+WSTAAIP:1,"FE80::DF6A:DC30:93BF:60AE"` —
+so the broker steps could start before DHCPv4 had produced anything.
+
+**Also fixed, and it had bitten twice:** three loops in `test_rnwf_at.c` each encoded how the module
+answers a command. Making subscribes await their SUBACK left two of them feeding OK forever and hung
+the suite for five minutes instead of failing. There is now one `answer_module()` helper, and
+`bring_up()` caps its iterations so the next such mistake names the step it stalled on. The drain loop
+even carried a comment saying it was written to survive a new script step — it did not, because the
+knowledge was duplicated rather than shared.
+
+### What the vendor repositories are worth, and what they are not
+
+Two Microchip repositories were cloned locally: `wireless_apps_rnwf` (Harmony) and the
+`WINCS02-RNWF02-SDK`. **Nothing from either belongs in this firmware**, and the SDK settles it: its
+`RNWF02/` directory contains a README and documentation, no host driver source at all. The only driver
+code is Harmony's `wdrv_winc_*` stack, which targets WINCS02 on a SAM E54 Xpro — `winc_socket.c` alone
+is 168 KB of source, it is welded to `DRV_HANDLE`/`SYS_CONSOLE`/OSAL/MCC-generated config, and it is
+not Apache-2.0. Our whole AT client is 620 bytes of RAM.
+
+As *reference* they were worth a great deal, and paid for themselves within the hour:
+
+- The AT reference's own example (`AT+MQTTSUB` → `OK` → `+MQTTSUB:1`, "Subscription granted QoS=1")
+  and `wdrv_winc_mqtt.c`'s handler (`reasonCode > WINC_CONST_MQTT_QOS_QOS2` → error) independently
+  confirmed D138 before it was implemented.
+- **Every RNWF02 configuration in the apps repo subscribes to exactly one topic**, the WINCS02 one
+  defines three, and `app_rnwf02.c:117` has a multi-topic subscribe list *commented out*. Microchip
+  does not exercise multiple subscriptions on this part — worth knowing if D138 turns out not to be
+  the whole story.
+- `RNWF02/doc/RNWF02_AT_Command_Reference.md` is the specification in **Markdown**, 26 479 lines,
+  locally greppable. It should replace PDF scraping as the citation source for `rnwf_at_cmds.h`.
+- **`tools/nvm_update/nvm-update.py` updates a running device over the ordinary AT UART** —
+  `AT+NVMER`, `AT+NVMWR`, `AT+NVMRD`, `AT+OTAVFY`, `AT+OTAACT`, `AT+RST`, `AT+GMR`, pyserial only
+  (D141). No FTDI, no bit-bang, no D2XX. The SDK's own `tools/dfu` is byte-identical in approach to
+  the one ADR-0026 shims — still `ftd2xx`, still `modprobe`/`ttyUSB` — so that ADR stands for its real
+  purpose, recovering a device that is *not running*.
+- **Firmware 3.2.0 exists** (the SDK's errata calls it latest; file names change to
+  `rnwf02_dfu_high.bin` and `rnwf02_wholeflash.bin`, published on the SDK's Releases page rather than
+  the firmware library page `fetch-rnwf02-firmware.sh` scrapes). ADR-0025's policy obliges the update.
+  Its errata lists only two known issues, an AP-mode MFP reconnect and an IPv6 multicast AMSDU Rx
+  stall — **no MQTT subscription limit**, so D138 was our bug and not the module's.
+
+**Tried and rejected:** a web search claimed Microchip provides Zephyr host drivers for RNWF02. Not
+supported by anything checkable here: the string "zephyr" appears nowhere in the SDK, and our pinned
+Zephyr (4.4.99) has `drivers/wifi/winc1500` — a different, older SPI part — and `esp_at`, but nothing
+for RNWF02 or WINCS02 and no devicetree binding. Silicon exists; **no Zephyr driver exists in
+mainline**; the board layer does not arise. Whether a Microchip-hosted Zephyr port exists outside
+upstream was not checkable in that session.
+
+**Open**
+
+- **`rnwf_at_publish()` sends its payload unescaped**, and the button payload is
+  `{"event":"press","ms":123}` — full of double quotes, inside a quoted AT argument. The spec requires
+  `"` and `\` to be escaped. Malformed today; never caught because publishing has never run on
+  hardware. This is the next thing that will break.
+- `wigwagd` has not yet published to the device: this Mac's VPN captures the broker's whole subnet, so
+  the daemon cannot reach `10.11.12.200` from here without a host route.
+- Both modules are on 3.1.0 while 3.2.0 is released (ADR-0025).
+
+
 ---
 
 ## 2026-08-17 — the documentation catches up with the device it describes
