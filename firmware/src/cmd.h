@@ -81,6 +81,23 @@ enum cmd_kind {
 	 * only happens if the module heard us, and the banner only arrives if we can hear it.
 	 */
 	CMD_TEST_MODULE,
+
+	/**
+	 * `test scan` — what can the radio actually see? Needs no settings either.
+	 *
+	 * The instrument for a failed association, because it separates causes the settings cannot:
+	 * whether the network is in range at all, whether it is on a band this module has (2.4 GHz only),
+	 * and what security it really advertises versus what `sec` claims.
+	 */
+	CMD_TEST_SCAN,
+
+	/**
+	 * `test broker` — the whole path: associate, reach MQTT, subscribe.
+	 *
+	 * Split from `test wifi` so each answers one question. Joining a network and reaching a broker
+	 * fail for entirely different reasons, and during bring-up they should not share a verdict.
+	 */
+	CMD_TEST_BROKER,
 };
 
 /**

@@ -38,6 +38,11 @@
 #define TMO_BOOT_MS	10000	/* AT+RST -> +BOOT; module measures ~4.0 s */
 #define TMO_WIFI_MS	30000	/* AT+WSTA=1 -> +WSTAAIP (association + DHCP) */
 #define TMO_MQTT_MS	15000	/* AT+MQTTCONN -> +MQTTCONNACK (DNS + TCP + CONNECT) */
+/*
+ * AT+WSCN=1 -> +WSCNDONE. An active scan visits every channel in the regulatory domain, so this is
+ * radio work on the same order as association rather than a command the module merely parses.
+ */
+#define TMO_SCAN_MS	20000
 
 #define TMO_POLL_MS	2000	/* a bare AT must be answered promptly or the module is gone */
 
@@ -70,6 +75,8 @@ static void at_send_raw(struct rnwf_at *at, const char *line)
  * A step builds its command into at->tx. Returning 0 means "nothing to do, skip me", which is how
  * optional credentials are handled without branching in the state machine.
  */
+#define at_step at_step_public
+
 struct at_step {
 	size_t (*build)(struct rnwf_at *at);
 	const char *await_aec;	/* NULL: the step is done when OK arrives */
@@ -259,12 +266,38 @@ static const struct at_step connect_script[] = {
 	{ step_keep_alive,	NULL,			TMO_SHORT_MS,	"set keep-alive" },
 	{ step_lwt,		NULL,			TMO_SHORT_MS,	"register last will" },
 	{ step_mqtt_connect,	RNWF_AEC_MQTT_CONNACK,	TMO_MQTT_MS,	"resolve, connect and CONNACK" },
-	{ step_subscribe,	NULL,			TMO_SHORT_MS,	"subscribe to state" },
-	{ step_subscribe_host,	NULL,			TMO_SHORT_MS,	"subscribe to host_online" },
-	{ step_subscribe_brightness, NULL,		TMO_SHORT_MS,	"subscribe to brightness" },
+	/*
+	 * Each subscribe waits for its own SUBACK (+MQTTSUB). Pipelining them on OK alone gets the
+	 * overlapping one refused with ERROR:8.0 at whichever step loses the race (RNWF_AEC_MQTT_SUBACK).
+	 */
+	{ step_subscribe,	RNWF_AEC_MQTT_SUBACK,	TMO_SHORT_MS,	"subscribe to state" },
+	{ step_subscribe_host,	RNWF_AEC_MQTT_SUBACK,	TMO_SHORT_MS,	"subscribe to host_online" },
+	{ step_subscribe_brightness, RNWF_AEC_MQTT_SUBACK, TMO_SHORT_MS,	"subscribe to brightness" },
 };
 
 #define SCRIPT_LEN ((uint8_t)(sizeof(connect_script) / sizeof(connect_script[0])))
+
+static size_t step_scan(struct rnwf_at *at)
+{
+	return bld(at, "%s=1", RNWF_AT_SCAN);	/* 1 = active scan */
+}
+
+/*
+ * The scan script. Shares the engine with the connect script because it is the same shape: send,
+ * await OK, advance. Echo and verbosity first for the same reasons as ever, since a scan follows a
+ * reset and the module comes back with echo on.
+ *
+ * The scan step waits for +WSCNDONE rather than for its OK, because OK here means only "scanning
+ * started" -- the spec's rule that acceptance is not completion, which is why the engine models an
+ * awaited AEC at all. Individual +WSCNIND results arrive in between and are handed to the callback.
+ */
+static const struct at_step scan_script[] = {
+	{ step_echo_off,	NULL,			TMO_SHORT_MS,	"module responding" },
+	{ step_verbosity,	NULL,			TMO_SHORT_MS,	"set error verbosity" },
+	{ step_scan,		RNWF_AEC_SCAN_DONE,	TMO_SCAN_MS,	"scan for networks" },
+};
+
+#define SCAN_SCRIPT_LEN ((uint8_t)(sizeof(scan_script) / sizeof(scan_script[0])))
 
 /*
  * Index of the association step, found in the table rather than remembered.
@@ -305,11 +338,11 @@ const char *rnwf_at_step_str(const struct rnwf_at *at)
 	if (at->state == RNWF_AT_ST_RESETTING || !at->boot_seen) {
 		return "resetting the module";
 	}
-	if (at->step >= SCRIPT_LEN) {
+	if (at->script == NULL || at->step >= at->script_len) {
 		return "?";
 	}
 
-	return connect_script[at->step].name;
+	return at->script[at->step].name;
 }
 
 /* ------------------------------------------------------------- transitions */
@@ -319,6 +352,19 @@ static void notify_link(struct rnwf_at *at, bool linked)
 	if (at->cb.on_link != NULL) {
 		at->cb.on_link(at->cb.user, linked);
 	}
+}
+
+/** Record a module-reported failure verbatim, then count it. Bounded copy; never fails. */
+static void note_error(struct rnwf_at *at, const char *line)
+{
+	size_t i;
+
+	for (i = 0; i + 1U < sizeof(at->last_error) && line[i] != '\0'; i++) {
+		at->last_error[i] = line[i];
+	}
+	at->last_error[i] = '\0';
+
+	at->errors++;
 }
 
 static void enter_backoff(struct rnwf_at *at)
@@ -351,8 +397,8 @@ static void enter_backoff(struct rnwf_at *at)
 /* Issue the step at at->step, skipping any that build nothing. Enters READY at the end. */
 static void run_script_from_current(struct rnwf_at *at)
 {
-	while (at->step < SCRIPT_LEN) {
-		const struct at_step *s = &connect_script[at->step];
+	while (at->step < at->script_len && at->step <= at->stop_after) {
+		const struct at_step *s = &at->script[at->step];
 
 		if (s->build(at) == 0U) {
 			at->step++;
@@ -366,10 +412,21 @@ static void run_script_from_current(struct rnwf_at *at)
 		return;
 	}
 
-	/* Script complete: subscribed, so the state we display can be trusted. */
-	at->state = RNWF_AT_ST_READY;
 	at->awaiting_ok = false;
 	at->awaiting_aec = NULL;
+
+	/*
+	 * Either the script ran out or it reached the boundary it was asked to stop at. Only the full
+	 * connect may claim READY: that state means the displayed state is trustworthy (ADR-0007), which
+	 * being merely associated does not establish.
+	 */
+	if (!at->ends_ready) {
+		at->state = RNWF_AT_ST_STOPPED;
+		return;
+	}
+
+	/* Script complete: subscribed, so the state we display can be trusted. */
+	at->state = RNWF_AT_ST_READY;
 	at->backoff_ms = BACKOFF_MIN_MS;
 	at->next_poll_ms = at->now_ms + POLL_INTERVAL_MS;
 	notify_link(at, true);
@@ -553,8 +610,8 @@ static void handle_line(struct rnwf_at *at, const char *line)
 	}
 
 	if (strncmp(line, RNWF_AT_ERROR, strlen(RNWF_AT_ERROR)) == 0) {
-		/* ATV3 makes this ERROR:<STATUS_CODE>; the code is diagnostic only. */
-		at->errors++;
+		/* ATV3 makes this ERROR:<STATUS_CODE>[,"<MSG>"]; keep it, it is the whole diagnosis. */
+		note_error(at, line);
 		enter_backoff(at);
 		return;
 	}
@@ -562,6 +619,15 @@ static void handle_line(struct rnwf_at *at, const char *line)
 	if (line[0] != '+') {
 		/* Echo, banner text, or something we do not model. Not an error. */
 		return;
+	}
+
+	/*
+	 * Hand every event up before interpreting it. The caller can then show what the module actually
+	 * said, which is the difference between "association failed" and knowing whether it associated
+	 * at all (+WSTALU) and what the module called the failure (+WSTAERR:<code>).
+	 */
+	if (at->cb.on_event != NULL) {
+		at->cb.on_event(at->cb.user, line);
 	}
 
 	/* The AEC the current step is waiting for. */
@@ -574,9 +640,54 @@ static void handle_line(struct rnwf_at *at, const char *line)
 			if (!field(args, 1, reason, sizeof(reason)) ||
 			    !parse_uint(reason, &code) ||
 			    code != (uint32_t)RNWF_MQTT_CONN_SUCCESS) {
-				at->errors++;
+				note_error(at, line);
 				enter_backoff(at);
 				return;
+			}
+		}
+
+		if (strcmp(at->awaiting_aec, RNWF_AEC_MQTT_SUBACK) == 0) {
+			uint32_t code;
+
+			/* Granted subscriptions echo the QoS; 128 (or anything higher) is a refusal. */
+			if (!parse_uint(args, &code) || code > RNWF_MQTT_SUBACK_MAX_QOS) {
+				note_error(at, line);
+				enter_backoff(at);
+				return;
+			}
+		}
+
+		/*
+		 * A link-local address is not an address we can use.
+		 *
+		 * +WSTAAIP fires for *every* automatic assignment, and with IPv6 SLAAC enabled the module
+		 * announces its fe80:: address the instant the link comes up -- before DHCPv4 has produced
+		 * anything. Completing the step on that would declare "the network accepted us" while the
+		 * module still has no route to an IPv4 broker, and then the MQTT steps race DHCP: observed
+		 * on hardware as +WSTAAIP:1,"FE80::DF6A:DC30:93BF:60AE" followed by inconsistent failures.
+		 * Keep waiting instead; the step's own timeout still bounds it.
+		 */
+		if (strcmp(at->awaiting_aec, RNWF_AEC_WSTA_GOT_IP) == 0) {
+			char ip[40];
+
+			if (field(args, 1, ip, sizeof(ip)) &&
+			    (strncmp(ip, "FE80", 4) == 0 || strncmp(ip, "fe80", 4) == 0)) {
+				at->aecs_ignored++;
+				return;
+			}
+		}
+
+		/*
+		 * Report the address the moment it arrives. Bring-up wants to *see* the DHCP lease --
+		 * "associated" and "has an address" are different claims, and only the second means the
+		 * network accepted us. Reported rather than stored: holding an IPv6 address without
+		 * truncating costs 40 bytes, and truncating one would be a diagnostic that lies.
+		 */
+		if (at->cb.on_ip != NULL && strcmp(at->awaiting_aec, RNWF_AEC_WSTA_GOT_IP) == 0) {
+			char ip[40];
+
+			if (field(args, 1, ip, sizeof(ip))) {
+				at->cb.on_ip(at->cb.user, ip);
 			}
 		}
 
@@ -591,6 +702,20 @@ static void handle_line(struct rnwf_at *at, const char *line)
 			at->state = RNWF_AT_ST_SCRIPT;
 			at->step = 0;
 			run_script_from_current(at);
+		}
+		return;
+	}
+
+	if (line_is_aec(line, RNWF_AEC_SCAN_RESULT, &args)) {
+		/*
+		 * One network. Handed over raw: the spec's own field order (RSSI, security, channel,
+		 * BSSID, SSID) says more to a human than anything this layer would rearrange, and a scan
+		 * result is never acted on automatically.
+		 */
+		if (at->cb.on_scan != NULL) {
+			at->cb.on_scan(at->cb.user, args);
+		} else {
+			at->aecs_ignored++;
 		}
 		return;
 	}
@@ -632,7 +757,7 @@ static void handle_line(struct rnwf_at *at, const char *line)
 	 * +SOCKBR:ERROR:4). Any AEC carrying ERROR is a failure of whatever we were doing.
 	 */
 	if (strstr(line, ":" RNWF_AT_ERROR) != NULL) {
-		at->errors++;
+		note_error(at, line);
 		enter_backoff(at);
 		return;
 	}
@@ -696,18 +821,46 @@ void rnwf_at_init(struct rnwf_at *at, const struct rnwf_at_config *cfg,
 	at->backoff_ms = BACKOFF_MIN_MS;
 }
 
-void rnwf_at_start(struct rnwf_at *at, uint32_t now_ms)
+static void start_script(struct rnwf_at *at, uint32_t now_ms, const struct at_step *script,
+			 uint8_t len, uint8_t stop_after, bool ends_ready)
 {
+	at->script = script;
+	at->script_len = len;
+	at->stop_after = stop_after;
+	at->ends_ready = ends_ready;
+
 	at->now_ms = now_ms;
 	at->state = RNWF_AT_ST_RESETTING;
 	at->step = 0;
 	at->boot_seen = false;
+	at->last_error[0] = '\0';
 	at->awaiting_ok = false;
 	at->awaiting_aec = NULL;
 	at->rx_len = 0;
 	at->rx_overflow = false;
 	at->deadline_ms = now_ms + TMO_BOOT_MS;
 	at_send_raw(at, RNWF_AT_RESET);
+}
+
+void rnwf_at_start(struct rnwf_at *at, uint32_t now_ms)
+{
+	start_script(at, now_ms, connect_script, SCRIPT_LEN, RNWF_AT_RUN_ALL, true);
+}
+
+void rnwf_at_reset_only(struct rnwf_at *at, uint32_t now_ms)
+{
+	/* An empty script: +BOOT completes the reset phase and there is nothing after it. */
+	start_script(at, now_ms, connect_script, 0, RNWF_AT_RUN_ALL, false);
+}
+
+void rnwf_at_start_network_only(struct rnwf_at *at, uint32_t now_ms)
+{
+	start_script(at, now_ms, connect_script, SCRIPT_LEN, network_step_index(), false);
+}
+
+void rnwf_at_scan(struct rnwf_at *at, uint32_t now_ms)
+{
+	start_script(at, now_ms, scan_script, SCAN_SCRIPT_LEN, RNWF_AT_RUN_ALL, false);
 }
 
 void rnwf_at_tick(struct rnwf_at *at, uint32_t now_ms)
@@ -718,7 +871,12 @@ void rnwf_at_tick(struct rnwf_at *at, uint32_t now_ms)
 	case RNWF_AT_ST_BACKOFF:
 		/* Signed comparison so the wrap at 2^32 ms does not strand the client. */
 		if ((int32_t)(now_ms - at->retry_at_ms) >= 0) {
-			rnwf_at_start(at, now_ms);
+			/*
+			 * The same script, not rnwf_at_start(): a retry after a failed diagnostic run must
+			 * not quietly turn into a full connect attempt the caller never asked for.
+			 */
+			start_script(at, now_ms, at->script, at->script_len, at->stop_after,
+				     at->ends_ready);
 		}
 		return;
 
@@ -747,6 +905,7 @@ void rnwf_at_tick(struct rnwf_at *at, uint32_t now_ms)
 		return;
 
 	case RNWF_AT_ST_IDLE:
+	case RNWF_AT_ST_STOPPED:
 	default:
 		return;
 	}

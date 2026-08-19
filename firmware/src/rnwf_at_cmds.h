@@ -77,6 +77,21 @@
  */
 #define RNWF_AT_PING		"AT"
 
+/*
+ * Scan for networks (spec: +WSCN, module ID 19). "AT+WSCN=<ACT_PASV>", 1 = active scanning.
+ *
+ * Results arrive as +WSCNIND AECs, one per network, each carrying
+ * "<RSSI>,<SEC_TYPE>,<CHANNEL>,<BSSID>,<SSID>", and the scan ends with +WSCNDONE. OK to the command
+ * means only that scanning started, which is why the step waits for the AEC.
+ *
+ * Worth knowing before reading a scan: this module is **2.4 GHz only**. The datasheet says 802.11
+ * b/g/n, and the specification confirms it structurally -- the only channel masks that exist are
+ * <CHANMASK24> (+WSCNC ID 11) and <REGDOMAIN_CHANMASK24> (ID 12). A 5 GHz network cannot appear here.
+ */
+#define RNWF_AT_SCAN		"AT+WSCN"
+#define RNWF_AEC_SCAN_RESULT	"+WSCNIND"	/* :<RSSI>,<SEC_TYPE>,<CHANNEL>,<BSSID>,<SSID> */
+#define RNWF_AEC_SCAN_DONE	"+WSCNDONE"
+
 /* Wi-Fi station config, "AT+WSTAC=<ID>,<VAL>" (spec: +WSTAC). */
 #define RNWF_AT_WSTAC		"AT+WSTAC"
 #define RNWF_AT_WSTA_ENABLE	"AT+WSTA=1"	/* 1 = use configuration from +WSTAC */
@@ -132,6 +147,25 @@ enum rnwf_mqttc_id {
 #define RNWF_AEC_WSTA_GOT_IP	"+WSTAAIP"	/* :<ASSOC_ID>,<IP_ADDRESS> */
 #define RNWF_AEC_MQTT_CONNACK	"+MQTTCONNACK"	/* :<CONNACK_FLAGS>,<CONN_REASON_CODE> */
 #define RNWF_AEC_MQTT_SUBRX	"+MQTTSUBRX"	/* :<DUP>,<QOS>,<RETAIN>,<TOPIC>,<PAYLOAD> */
+
+/*
+ * "+MQTTSUB:<REASON_CODE>" — the **SUBACK**, and the reason a subscribe is not finished when its OK
+ * arrives (spec AEC reference: 0/1/2 granted QoS, 128 unspecified error).
+ *
+ * Learned on hardware, with the broker's log as the witness: sending the next AT+MQTTSUB while the
+ * previous SUBACK is still outstanding gets the second command refused by the *module* with
+ * ERROR:8.0, and it never reaches the broker at all — mosquitto logged one SUBSCRIBE, one SUBACK,
+ * then nothing until the keep-alive PINGREQ. Which subscribe loses depends on broker latency, so the
+ * same firmware failed at the third subscribe on one run and the second on the next.
+ *
+ * Shares a prefix with +MQTTSUBRX, so matching must require ':' or end-of-line after the name,
+ * exactly as +MQTTCONN does against +MQTTCONNACK.
+ */
+#define RNWF_AEC_MQTT_SUBACK	"+MQTTSUB"
+
+/* A granted subscription echoes the QoS it was granted; 128 is the documented failure. */
+#define RNWF_MQTT_SUBACK_MAX_QOS	2
+
 
 /*
  * "+MQTTCONN:<CONN_STATE>" — 0 not connected, 1 connected. Shares a prefix with +MQTTCONNACK, so

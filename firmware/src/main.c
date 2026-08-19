@@ -56,28 +56,50 @@ static struct transport tport;
  * watchdog's 500 ms budget and reboot the device mid-test (ADR-0016). And the console must stay
  * responsive while it runs.
  */
+/*
+ * A bring-up ladder rather than one all-or-nothing test.
+ *
+ * Each rung answers a question that stands on its own, so a failure names one cause instead of three:
+ *
+ *   module  is anything there?            AT+RST, wait for +BOOT. No settings needed.
+ *   scan    what can the radio see?       AT+WSCN=1. No settings needed.
+ *   wifi    does the network accept us?    associate, get an address, stop there.
+ *   broker  can we reach MQTT?            the whole connect script, through subscribe.
+ *
+ * The product never uses the rungs: after `save` it runs the full script at power-up. These exist
+ * because during bring-up "it does not work" is four different problems.
+ */
+enum test_mode {
+	TEST_MODULE,
+	TEST_SCAN,
+	TEST_WIFI,
+	TEST_BROKER,
+};
+
 static struct {
 	bool running;
+	enum test_mode mode;
 	uint32_t started_ms;
+	uint32_t budget_ms;
 	uint8_t last_step;
 	uint32_t last_errors;
 	uint32_t last_timeouts;
-} wifi_test;
-
-/* Generous: the script's own timeouts total more than 45 s if every step waits its full allowance. */
-#define WIFI_TEST_BUDGET_MS 60000U
-
-/* `test module` state; see module_test_start(). */
-static struct {
-	bool running;
-	uint32_t started_ms;
-} module_test;
+	uint16_t scan_results;
+} at_test;
 
 /*
- * Must exceed rnwf_at's TMO_BOOT_MS (10 s, and the module really does take ~4 s), or this budget
- * fires first and reports a failure while the client is still legitimately waiting.
+ * Budgets are per rung, and each must exceed the longest timeout the client itself will wait, or this
+ * budget fires first and reports a failure while the client is still legitimately waiting.
+ *
+ * module: TMO_BOOT_MS is 10 s and the module really does take ~4 s (D136).
+ * scan:   TMO_SCAN_MS is 20 s; an active scan visits every channel in the regulatory domain.
+ * wifi:   TMO_WIFI_MS is 30 s for association plus DHCP, after the boot.
+ * broker: the script's own timeouts total more than 45 s if every step waits its full allowance.
  */
-#define MODULE_TEST_BUDGET_MS 12000U
+#define TEST_BUDGET_MODULE_MS	12000U
+#define TEST_BUDGET_SCAN_MS	25000U
+#define TEST_BUDGET_WIFI_MS	45000U
+#define TEST_BUDGET_BROKER_MS	60000U
 
 /*
  * Live settings: build-time defaults from Kconfig, overlaid by whatever is stored, editable over the
@@ -91,6 +113,19 @@ static struct wigwag_settings settings;
  * Not const any more, and the strings now point into `settings` rather than at flash literals — which
  * is what makes them configurable without a rebuild, and what costs ~300 bytes of RAM (settings.h).
  * The topic names stay literals: they are the protocol (CONTEXT.md), not configuration.
+ *
+ * **This struct is half live and half snapshot, and that asymmetry has bitten once already.** The
+ * string members borrow pointers into `settings`, so a `set ssid` or `set pass` is visible here
+ * immediately. The scalars — sec_type, broker_port, keep_alive_s — are *copies*, so a `set sec` or
+ * `set port` does nothing until module_cfg_from_settings() runs again.
+ *
+ * The symptom when it went wrong: `set sec 3` looked correct in `show` and in the test banner, both of
+ * which read `settings`, while the module had been told 0. It hunted for an *open* network of that
+ * name, rejected every encrypted AP it scanned with "privacy fail, op_mode 0" in its own MAC log, and
+ * burned its whole connection timeout. Nothing in the firmware was in a position to notice.
+ *
+ * So: **every path that starts the AT client must call module_cfg_from_settings() first.** There are
+ * two, boot and test_start(), and both do.
  */
 static struct rnwf_at_config module_cfg = {
 	.keep_alive_s = 60,
@@ -243,127 +278,253 @@ static void on_link(void *user, bool linked)
 	printk("wigwag: at link %s\n", linked ? "up" : "down");
 }
 
-/* At file scope so `test wifi` can bring the client up on demand, not only at boot. */
+/* Defined below, next to the test driver they report for. */
+static void on_scan(void *user, const char *info);
+static void on_ip(void *user, const char *ip);
+static void on_event(void *user, const char *line);
+
+/* At file scope so the test rungs can bring the client up on demand, not only at boot. */
 static const struct rnwf_at_callbacks at_callbacks = {
 	.on_message = on_message,
 	.on_link = on_link,
+	.on_ip = on_ip,
+	.on_scan = on_scan,
+	.on_event = on_event,
 };
 
-int wifi_test_start(void)
+/*
+ * Say what we know about the passphrase without saying the passphrase.
+ *
+ * Its length is the diagnostic that matters and is safe to print: a trailing space, a truncated
+ * paste or a value outside WPA's 8-63 character range are all invisible in `show`, which masks the
+ * value as <set> precisely because a console is a log (Rule: secrets are never echoed).
+ */
+static void report_passphrase(void)
 {
-	if (wifi_test.running || module_test.running) {
-		return -EALREADY;
+	size_t len = strlen(settings.pass);
+
+	if (len == 0U) {
+		printk("test:   no passphrase set, joining as an open network\n");
+		return;
 	}
 
-	if (settings.ssid[0] == '\0') {
-		return -EINVAL;
+	printk("test:   passphrase %u characters\n", (unsigned)len);
+
+	/* WPA-PSK is 8-63 ASCII characters; outside that an AP refuses whatever we send. */
+	if (len < 8U || len > 63U) {
+		printk("test:   that is outside WPA's 8-63 range, so association cannot succeed\n");
 	}
 
 	/*
-	 * Bring the module up on demand. On a wired device it was never started (D118), so this is the
-	 * one place the UART is initialised outside boot. Safe to call again if it already was: the
-	 * transport owns nothing here, only the client.
+	 * A quote or backslash needs escaping in an AT string argument, and the builder does not escape
+	 * yet, so such a passphrase is sent malformed. Report it rather than fail mysteriously.
+	 */
+	if (strpbrk(settings.pass, "\"\\") != NULL) {
+		printk("test:   it contains a quote or backslash, which this firmware does not yet "
+		       "escape: that passphrase will not reach the module intact\n");
+	}
+}
+
+/* Bring the module up on demand and start one rung of the ladder. */
+static int test_start(enum test_mode mode, uint32_t budget_ms)
+{
+	uint32_t now;
+
+	if (at_test.running) {
+		return -EALREADY;
+	}
+
+	/*
+	 * Re-derive first. Console edits since boot are only half-visible through module_cfg (see its
+	 * comment): the strings are borrowed, the scalars are copies, so without this a `set sec` or
+	 * `set port` is silently ignored by everything downstream.
+	 */
+	module_cfg_from_settings();
+
+	/*
+	 * On a wired device the client was never started (D118), so this is the one place the module
+	 * UART is initialised outside boot. Safe to call again if it already was: the transport owns
+	 * nothing here, only the client.
 	 */
 	if (rnwf_uart_init(&at_client, &module_cfg, &at_callbacks) != 0) {
 		return -ENODEV;
 	}
 
-	wifi_test.running = true;
-	wifi_test.started_ms = (uint32_t)k_uptime_get();
-	wifi_test.last_step = 0xFF;
-	wifi_test.last_errors = at_client.errors;
-	wifi_test.last_timeouts = at_client.timeouts;
+	now = (uint32_t)k_uptime_get();
 
-	printk("test: trying ssid \"%s\" broker %s:%u%s\n", settings.ssid, settings.broker,
-	       settings.port, (settings.pass[0] != '\0') ? "" : " (open network)");
+	at_test.running = true;
+	at_test.mode = mode;
+	at_test.started_ms = now;
+	at_test.budget_ms = budget_ms;
+	at_test.last_step = 0xFF;
+	at_test.last_errors = at_client.errors;
+	at_test.last_timeouts = at_client.timeouts;
+	at_test.scan_results = 0;
 
-	rnwf_at_start(&at_client, wifi_test.started_ms);
+	switch (mode) {
+	case TEST_MODULE:
+		printk("test: resetting the module, waiting for +BOOT\n");
+		rnwf_at_reset_only(&at_client, now);
+		break;
+
+	case TEST_SCAN:
+		printk("test: scanning (2.4 GHz only; this module has no 5 GHz radio)\n");
+		rnwf_at_scan(&at_client, now);
+		break;
+
+	case TEST_WIFI:
+		/* From module_cfg, not settings: this is the value the module will actually be sent. */
+		printk("test: joining \"%s\" (sec %d)\n", module_cfg.ssid, module_cfg.sec_type);
+		report_passphrase();
+		rnwf_at_start_network_only(&at_client, now);
+		break;
+
+	case TEST_BROKER:
+	default:
+		printk("test: joining \"%s\" (sec %d) then broker %s:%u\n", module_cfg.ssid,
+		       module_cfg.sec_type, module_cfg.broker_host, module_cfg.broker_port);
+		report_passphrase();
+		rnwf_at_start(&at_client, now);
+		break;
+	}
 
 	return 0;
+}
+
+int module_test_start(void)
+{
+	return test_start(TEST_MODULE, TEST_BUDGET_MODULE_MS);
+}
+
+int scan_test_start(void)
+{
+	return test_start(TEST_SCAN, TEST_BUDGET_SCAN_MS);
+}
+
+int wifi_test_start(void)
+{
+	/* Both network rungs need an SSID; the module and scan rungs deliberately need nothing. */
+	if (settings.ssid[0] == '\0') {
+		return -EINVAL;
+	}
+
+	return test_start(TEST_WIFI, TEST_BUDGET_WIFI_MS);
+}
+
+int broker_test_start(void)
+{
+	if (settings.ssid[0] == '\0') {
+		return -EINVAL;
+	}
+
+	return test_start(TEST_BROKER, TEST_BUDGET_BROKER_MS);
+}
+
+/** One scan result, straight from the module. */
+static void on_scan(void *user, const char *info)
+{
+	ARG_UNUSED(user);
+
+	if (info == NULL) {
+		return;		/* completion is reported by the service loop, with the count */
+	}
+
+	at_test.scan_results++;
+
+	/* Raw, in the specification's field order: RSSI, security, channel, BSSID, SSID. */
+	printk("test:   %s\n", info);
 }
 
 /*
- * `test module` — the narrowest liveness question, and the one to ask first.
+ * What the module said, while a test is running.
  *
- * Deliberately needs no settings. `test wifi` cannot report anything until an SSID is stored and a
- * broker answers, which makes it useless as a *bring-up* instrument: during bring-up the question is
- * not "are these credentials right" but "is there a module on the other end of these two wires".
- *
- * Passing requires both directions to work, which is what makes it worth having: the module only
- * reboots if it received AT+RST, and the +BOOT banner only arrives if we can hear it. One exchange,
- * both wires, no configuration.
+ * Only during a test: in normal operation this would be console noise on a device whose output is
+ * three lamps, and the counters already carry the same information in aggregate.
  */
-int module_test_start(void)
+static void on_event(void *user, const char *line)
 {
-	if (module_test.running || wifi_test.running) {
-		return -EALREADY;
+	ARG_UNUSED(user);
+
+	if (at_test.running) {
+		printk("test:   module said %s\n", line);
 	}
-
-	/* Same on-demand bring-up as the Wi-Fi test: on a wired device the client was never started. */
-	if (rnwf_uart_init(&at_client, &module_cfg, &at_callbacks) != 0) {
-		return -ENODEV;
-	}
-
-	module_test.running = true;
-	module_test.started_ms = (uint32_t)k_uptime_get();
-
-	printk("test: resetting the module, waiting for +BOOT\n");
-
-	rnwf_at_start(&at_client, module_test.started_ms);
-
-	return 0;
 }
 
-static void module_test_service(uint32_t now)
+/** The address the module was given. Printed as it arrives, not stored (see rnwf_at_callbacks). */
+static void on_ip(void *user, const char *ip)
 {
-	uint32_t elapsed = now - module_test.started_ms;
+	ARG_UNUSED(user);
 
-	rnwf_uart_poll(&at_client);
-	rnwf_at_tick(&at_client, now);
+	printk("test:   got address %s\n", ip);
+}
 
-	if (at_client.boot_seen) {
+/* Did this rung reach what it was asked to reach? */
+static bool test_passed(void)
+{
+	switch (at_test.mode) {
+	case TEST_MODULE:
+		return at_client.boot_seen;
+
+	case TEST_SCAN:
+	case TEST_WIFI:
+		/* Both stop deliberately rather than reaching READY (RNWF_AT_ST_STOPPED). */
+		return at_client.state == RNWF_AT_ST_STOPPED;
+
+	case TEST_BROKER:
+	default:
+		return at_client.state == RNWF_AT_ST_READY;
+	}
+}
+
+static void test_report_pass(uint32_t elapsed)
+{
+	switch (at_test.mode) {
+	case TEST_MODULE:
 		printk("test: PASS — module answered, +BOOT after %u ms (rx %u bytes)\n", elapsed,
 		       rnwf_uart_rx_bytes());
 		printk("test:   both directions work: it reset because it heard us\n");
-		module_test.running = false;
-		return;
-	}
+		break;
 
-	if (at_client.state == RNWF_AT_ST_BACKOFF || elapsed > MODULE_TEST_BUDGET_MS) {
-		uint32_t rx_bytes = rnwf_uart_rx_bytes();
-
-		printk("test: FAIL — no +BOOT after %u ms (rx %u bytes)\n", elapsed, rx_bytes);
-
-		if (rx_bytes == 0U) {
-			printk("test:   nothing arrived at all: check power, ground, and that the "
-			       "module's TX reaches this board's RX pin\n");
-		} else {
-			printk("test:   bytes arrived but no +BOOT: suspect the baud rate (the module "
-			       "defaults to 230400) or the wrong module UART\n");
+	case TEST_SCAN:
+		printk("test: PASS — scan complete, %u network%s seen (%u ms)\n",
+		       at_test.scan_results, (at_test.scan_results == 1U) ? "" : "s", elapsed);
+		if (at_test.scan_results == 0U) {
+			printk("test:   nothing at all: check the antenna, and that any network "
+			       "nearby is 2.4 GHz\n");
 		}
+		break;
 
-		module_test.running = false;
+	case TEST_WIFI:
+		printk("test: PASS — on the network (%u ms)\n", elapsed);
+		printk("test:   `test broker` next, to try %s:%u\n", settings.broker,
+		       settings.port);
+		break;
+
+	case TEST_BROKER:
+	default:
+		printk("test: PASS — associated, broker reachable, subscribed (%u ms)\n", elapsed);
+		printk("test:   `set transport wifi` and `save`, then reboot, to use it\n");
+		break;
 	}
 }
 
-/** Advance the test and narrate it. Called every loop while running. */
-static void wifi_test_service(uint32_t now)
+/** Advance the running rung and narrate it. Called every loop while running. */
+static void at_test_service(uint32_t now)
 {
-	uint32_t elapsed = now - wifi_test.started_ms;
+	uint32_t elapsed = now - at_test.started_ms;
 
 	rnwf_uart_poll(&at_client);
 	rnwf_at_tick(&at_client, now);
 
-	/* Narrate each step as it is reached: this is the diagnostic the command exists for. */
-	if (at_client.step != wifi_test.last_step) {
-		wifi_test.last_step = at_client.step;
+	/* Narrate each step as it is reached: this is the diagnostic these commands exist for. */
+	if (at_client.step != at_test.last_step && at_test.mode != TEST_MODULE) {
+		at_test.last_step = at_client.step;
 		printk("test:   %s\n", rnwf_at_step_str(&at_client));
 	}
 
-	if (at_client.state == RNWF_AT_ST_READY) {
-		printk("test: PASS — associated, broker reachable, subscribed (%u ms)\n", elapsed);
-		printk("test: `set transport wifi` and `save`, then reboot, to use it\n");
-		wifi_test.running = false;
+	if (test_passed()) {
+		test_report_pass(elapsed);
+		at_test.running = false;
 		return;
 	}
 
@@ -372,24 +533,24 @@ static void wifi_test_service(uint32_t now)
 	 * the step name says which setting is wrong. Reported on the first one rather than after the
 	 * backoff has retried and muddied the picture.
 	 */
-	if (at_client.errors != wifi_test.last_errors) {
-		printk("test: FAIL at \"%s\" — the module rejected it\n",
-		       rnwf_at_step_str(&at_client));
+	if (at_client.errors != at_test.last_errors) {
+		printk("test: FAIL at \"%s\" — the module rejected it: %s\n",
+		       rnwf_at_step_str(&at_client),
+		       (at_client.last_error[0] != '\0') ? at_client.last_error : "no code given");
 		printk("test:   check the setting that step configures, then try again\n");
-		wifi_test.running = false;
+		at_test.running = false;
 		return;
 	}
 
-	if (at_client.state == RNWF_AT_ST_BACKOFF) {
+	if (at_client.state == RNWF_AT_ST_BACKOFF || elapsed > at_test.budget_ms) {
 		uint32_t rx_bytes = rnwf_uart_rx_bytes();
-		bool timed_out = (at_client.timeouts != wifi_test.last_timeouts);
+		bool timed_out = (at_client.timeouts != at_test.last_timeouts);
 
 		/*
 		 * Do not call it a timeout unless it was one. BACKOFF is also entered when the module
 		 * *reports* a failure — +WSTAERR or +WSTALD — which on a wrong network arrives long
-		 * before the 30 s association allowance expires. Claiming "timed out (13870 ms)" for a
-		 * failure the module volunteered at 13.9 s of a 30 s budget is the diagnostic lying
-		 * about the one thing it exists to explain (Rule 4).
+		 * before the association allowance expires. Claiming a timeout for a failure the module
+		 * volunteered is the diagnostic lying about the one thing it exists to explain (Rule 4).
 		 */
 		printk("test: FAIL at \"%s\" — %s (%u ms)\n", rnwf_at_step_str(&at_client),
 		       timed_out ? "timed out" : "the module reported a failure", elapsed);
@@ -404,24 +565,23 @@ static void wifi_test_service(uint32_t now)
 			printk("test:   check power (VDD and its LED), ground, and that the module's "
 			       "TX reaches this board's RX pin\n");
 		} else {
-			printk("test:   rx %u bytes, %u dropped, %u overruns\n", rx_bytes,
-			       at_client.lines_dropped, rnwf_uart_overruns());
-			printk("test:   %s\n",
-			       rnwf_at_before_network(&at_client)
-				       ? "the module is answering, so this is the network: check ssid, "
-					 "pass and sec"
-				       : "the broker did not answer; check its address, port and that "
-					 "it is up");
+			printk("test:   rx %u bytes, %u dropped, %u unmodelled, %u overruns\n",
+			       rx_bytes, at_client.lines_dropped, at_client.aecs_ignored,
+			       rnwf_uart_overruns());
+
+			if (at_test.mode == TEST_MODULE) {
+				printk("test:   bytes arrived but no +BOOT: suspect the baud rate "
+				       "(the module defaults to 230400)\n");
+			} else if (rnwf_at_before_network(&at_client)) {
+				printk("test:   the module is answering, so this is the network: "
+				       "check ssid, pass and sec, and try `test scan`\n");
+			} else {
+				printk("test:   the broker did not answer; check its address, port "
+				       "and that it is up\n");
+			}
 		}
 
-		wifi_test.running = false;
-		return;
-	}
-
-	if (elapsed > WIFI_TEST_BUDGET_MS) {
-		printk("test: FAIL — gave up after %u ms at \"%s\"\n", elapsed,
-		       rnwf_at_step_str(&at_client));
-		wifi_test.running = false;
+		at_test.running = false;
 	}
 }
 
@@ -464,12 +624,8 @@ static void at_service(bool at_ready)
 		 * A running test services the module even on a wired device. It cannot reach the lamps —
 		 * on_message() checks who owns them — so this only produces console output.
 		 */
-		if (wifi_test.running) {
-			wifi_test_service((uint32_t)k_uptime_get());
-		}
-
-		if (module_test.running) {
-			module_test_service((uint32_t)k_uptime_get());
+		if (at_test.running) {
+			at_test_service((uint32_t)k_uptime_get());
 		}
 
 		if (at_ready) {

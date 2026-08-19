@@ -234,8 +234,22 @@ static void test_test_subjects(void)
 	struct cmd c;
 
 	CHECK(run("test module", &c) && c.kind == CMD_TEST_MODULE, "test module");
+	CHECK(run("test scan", &c) && c.kind == CMD_TEST_SCAN, "test scan");
 	CHECK(run("test wifi", &c) && c.kind == CMD_TEST_WIFI, "test wifi");
+	CHECK(run("test broker", &c) && c.kind == CMD_TEST_BROKER, "test broker");
 	CHECK(run("  test   module  ", &c) && c.kind == CMD_TEST_MODULE, "test module, padded");
+
+	/* The four rungs must stay distinct: sharing a kind would merge two verdicts again. */
+	{
+		struct cmd a, b, d, e;
+
+		(void)run("test module", &a);
+		(void)run("test scan", &b);
+		(void)run("test wifi", &d);
+		(void)run("test broker", &e);
+		CHECK(a.kind != b.kind && b.kind != d.kind && d.kind != e.kind && a.kind != e.kind,
+		      "two test subjects parse to the same kind");
+	}
 
 	CHECK(!run("test", &c), "bare test is rejected");
 	CHECK(!run("test bogus", &c), "unknown subject is rejected");

@@ -29,6 +29,12 @@
 #define RNWF_AT_TX_BUF_SZ	288
 #define RNWF_AT_RX_LINE_SZ	256
 
+/*
+ * The script step type is opaque here: the tables live in rnwf_at.c and nothing outside chooses or
+ * builds a step. Only the pointer needs to be storable.
+ */
+struct at_step_public;
+
 /** Byte transport. Returns bytes written, or negative on failure. */
 struct rnwf_at_io {
 	int (*write)(void *user, const uint8_t *data, size_t len);
@@ -48,6 +54,36 @@ struct rnwf_at_io {
 struct rnwf_at_callbacks {
 	void (*on_message)(void *user, const char *topic, const char *payload);
 	void (*on_link)(void *user, bool linked);
+
+	/**
+	 * The address the module was given, the moment +WSTAAIP arrives. Optional.
+	 *
+	 * A callback rather than a stored field on purpose: an IPv6 address needs 40 bytes to hold
+	 * without truncating, and truncating one would be a diagnostic that lies (Rule 4). Reported as
+	 * it happens instead, for the cost of one pointer.
+	 */
+	void (*on_ip)(void *user, const char *ip);
+
+	/**
+	 * One scan result, as the module's raw +WSCNIND info field. NULL means the scan is finished.
+	 *
+	 * Raw rather than parsed because this is a human-facing diagnostic and the specification's own
+	 * field order -- RSSI, security, channel, BSSID, SSID -- is more informative than anything this
+	 * layer would invent from it. Optional.
+	 */
+	void (*on_scan)(void *user, const char *info);
+
+	/**
+	 * Every asynchronous event the module reports, verbatim, before this client acts on it. Optional.
+	 *
+	 * Exists because the events we do not model were being discarded into a counter that nothing
+	 * printed, which cost a bring-up session: with +WSTALU invisible there was no way to tell an
+	 * association that failed from one that succeeded and then lost DHCP, and +WSTAERR's code -- the
+	 * module's own verdict -- was thrown away with it. A diagnostic that hides the device's testimony
+	 * is not a diagnostic.
+	 */
+	void (*on_event)(void *user, const char *line);
+
 	void *user;
 };
 
@@ -93,6 +129,15 @@ enum rnwf_at_state {
 	RNWF_AT_ST_SCRIPT,	/* walking the connect script */
 	RNWF_AT_ST_READY,	/* subscribed; link is trusted */
 	RNWF_AT_ST_BACKOFF,	/* failed; waiting to retry */
+
+	/**
+	 * The script it was asked to run finished, and it was not the full connect.
+	 *
+	 * Distinct from READY because READY means "the state on the lamps can be trusted" (ADR-0007), and
+	 * a module that is merely associated, or has merely finished a scan, confirms nothing about the
+	 * host's state. Bring-up wants to stop at these boundaries; the product never does.
+	 */
+	RNWF_AT_ST_STOPPED,
 };
 
 struct rnwf_at {
@@ -101,6 +146,18 @@ struct rnwf_at {
 	struct rnwf_at_callbacks cb;
 
 	enum rnwf_at_state state;
+
+	/*
+	 * Which script is running, and how far.
+	 *
+	 * Parameterised so bring-up can stop at a boundary that means something on its own: associated
+	 * but not connected to a broker, or a scan and nothing else. The product always runs the whole
+	 * connect script, so the default is exactly the old behaviour.
+	 */
+	const struct at_step_public *script;
+	uint8_t script_len;
+	uint8_t stop_after;	/* last step index to run; RNWF_AT_RUN_ALL for the whole script */
+	bool ends_ready;	/* completing means READY (a trusted link) rather than STOPPED */
 
 	/* Connect script position and what the current step is waiting for. */
 	uint8_t step;
@@ -151,6 +208,17 @@ struct rnwf_at {
 	uint32_t lines_dropped;	/* malformed, oversized, or unparseable */
 	uint32_t aecs_ignored;	/* well-formed AEC we have no use for */
 	uint32_t errors;
+
+	/*
+	 * The last failure the module reported, verbatim and bounded (24 B).
+	 *
+	 * ATV3 answers a rejected command with ERROR:<STATUS_CODE>, and the code is the difference
+	 * between "the module does not know that command" (0.3) and "invalid parameter" (0.4) and
+	 * "access denied" (0.10) and a subsystem-specific failure such as 8.0 MQTT_ERROR. This used to
+	 * be counted and dropped -- the comment at the site even said "the code is diagnostic only" --
+	 * which left "the module rejected it" as the whole of the diagnosis.
+	 */
+	char last_error[24];
 	uint32_t timeouts;
 	uint32_t messages;
 	uint32_t polls;		/* keepalive polls issued while READY */
@@ -159,8 +227,35 @@ struct rnwf_at {
 void rnwf_at_init(struct rnwf_at *at, const struct rnwf_at_config *cfg,
 		  const struct rnwf_at_io *io, const struct rnwf_at_callbacks *cb);
 
-/** Begin the connect sequence. Safe to call again; restarts from the reset. */
+#define RNWF_AT_RUN_ALL 0xFFU
+
+/** Begin the full connect sequence, ending in READY. Safe to call again; restarts from the reset. */
 void rnwf_at_start(struct rnwf_at *at, uint32_t now_ms);
+
+/**
+ * Reset the module and stop as soon as it says +BOOT. Sends AT+RST and nothing else.
+ *
+ * The narrowest liveness check there is, and it proves both directions: the module only reboots if it
+ * received the command, and the banner only arrives if the host can hear it.
+ */
+void rnwf_at_reset_only(struct rnwf_at *at, uint32_t now_ms);
+
+/**
+ * Run the connect script only as far as Wi-Fi association, then stop in RNWF_AT_ST_STOPPED.
+ *
+ * "On the network" is a result worth having by itself: it separates a credentials or radio problem
+ * from a broker problem, which are otherwise one indistinguishable failure.
+ */
+void rnwf_at_start_network_only(struct rnwf_at *at, uint32_t now_ms);
+
+/**
+ * Reset the module, then scan for networks (AT+WSCN=1). Results arrive via callbacks.on_scan.
+ *
+ * Needs no configuration at all, which is what makes it the right instrument when association fails:
+ * it answers whether the network is even visible, on a band this module can use, advertising the
+ * security the settings claim.
+ */
+void rnwf_at_scan(struct rnwf_at *at, uint32_t now_ms);
 
 /** Feed received bytes. Total: malformed input is counted and dropped, never fatal. */
 void rnwf_at_feed(struct rnwf_at *at, const uint8_t *data, size_t len);

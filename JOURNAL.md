@@ -227,6 +227,53 @@ Both were the same mistake: a number standing in for a position, with nothing as
 
 RAM **5 280 B / 64.45 %**, flash **36 864 B / 60.00 %**. 11 182 firmware checks, 0 failures.
 
+### A bring-up ladder instead of one all-or-nothing test
+
+Association still fails against a real WPA2 network, and chasing it exposed the shape problem: one
+command was answering four different questions. `test wifi` needed an SSID *and* a reachable broker
+before it said anything, so a network fault and a broker fault shared a verdict. Now:
+
+| rung | asks | needs |
+|---|---|---|
+| `test module` | is anything there? | nothing |
+| `test scan` | what can the radio see? | nothing |
+| `test wifi` | does the network accept us? | ssid/pass/sec |
+| `test broker` | can we reach MQTT? | the above plus broker |
+
+`test wifi` stops **once it has an address** and says so, printing the DHCP lease as it arrives.
+
+The AT client's script engine is now parameterised — `script`, `script_len`, `stop_after`,
+`ends_ready` — rather than hard-wired to `connect_script[]`, and there is a second table,
+`scan_script[]` (echo off → verbosity → `AT+WSCN=1`), which reuses the same send/await-OK/advance
+machinery. Completing a partial run lands in the new **`RNWF_AT_ST_STOPPED`**, deliberately *not*
+`READY`: READY means the displayed state is trustworthy (ADR-0007), and being merely associated
+establishes nothing of the kind.
+
+Two decisions worth recording:
+
+- **Callbacks rather than stored fields** for the address and scan results. Holding an IPv6 address
+  without truncating costs 40 bytes, and a truncated one would be a diagnostic that lies; scan results
+  are unbounded. Both are reported as they arrive, for the cost of two pointers. Scan results go up
+  raw, in the spec's own field order (RSSI, security, channel, BSSID, SSID), because that says more to
+  a human than anything this layer would rearrange.
+- **A retry must not promote itself.** `tick()` in BACKOFF used to call `rnwf_at_start()`, which would
+  have turned a failed `test wifi` retry into a full broker connect nobody asked for. It now restarts
+  the *same* script, and there is a test that fails if that regresses.
+
+`AT+WSCN` verified against the spec (module ID 19, `<ACT_PASV>` 1 = active), as are the AECs
+`+WSCNIND:<RSSI>,<SEC_TYPE>,<CHANNEL>,<BSSID>,<SSID>` and `+WSCNDONE`. Also confirmed there, and now
+recorded in `rnwf_at_cmds.h`: **this module is 2.4 GHz only** — the only channel masks that exist
+anywhere in the specification are `<CHANMASK24>` and `<REGDOMAIN_CHANMASK24>`, so a 5 GHz network
+cannot appear in a scan at all.
+
+`+WSTAERR` was considered as the way to explain an association failure and **rejected as too coarse**:
+its whole vocabulary is `20,2 STA_CONN_REFUSED` and `20,3 STA_CONN_FAILED`, which cannot separate a
+wrong passphrase from an absent SSID. A scan can.
+
+RAM **5 296 B / 64.65 %**, flash **37 920 B / 61.72 %**. **11 212** firmware checks, 0 failures — 30
+new, covering each rung's boundary: a bare reset sends exactly one command, a network-only run reaches
+no `AT+MQTT`, a scan configures no station, and a retry stays the rung it started as.
+
 ---
 
 ## 2026-08-17 — the documentation catches up with the device it describes

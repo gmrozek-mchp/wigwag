@@ -50,4 +50,10 @@ int wifi_test_start(void);
  */
 int module_test_start(void);
 
+/** Scan for visible networks (AT+WSCN=1). Needs no settings. Same return codes as above. */
+int scan_test_start(void);
+
+/** The full path: associate, connect to the broker, subscribe. -EINVAL with no SSID stored. */
+int broker_test_start(void);
+
 #endif /* CONSOLE_H */

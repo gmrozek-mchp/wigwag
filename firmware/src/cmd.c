@@ -284,8 +284,18 @@ bool cmd_parse(char *line, struct cmd *out)
 			return true;
 		}
 
+		if (strcmp(what, "scan") == 0) {
+			out->kind = CMD_TEST_SCAN;
+			return true;
+		}
+
 		if (strcmp(what, "wifi") == 0) {
 			out->kind = CMD_TEST_WIFI;
+			return true;
+		}
+
+		if (strcmp(what, "broker") == 0) {
+			out->kind = CMD_TEST_BROKER;
 			return true;
 		}
 
