@@ -18,7 +18,7 @@ copied into this repo.
 
     # 3. only once verify passes, and only with --yes:
     uv run --with pyftdi firmware/tools/rnwf02_dfu_mac.py --utils-dir ... \
-        --write ~/Downloads/RN_release_3.1.0/bin/rnwf02.bootable.bin low --yes
+        --write ~/Downloads/RNWF02_module_release_3.2.0/bin/rnwf02_dfu_high.bin high --yes
 
 WIRING (FTDI 3.3 V cable, standard TTL-232R colours -- the pin roles are from dfu.py's own map,
 FTDI async bit-bang D0/D1/D3):
@@ -424,9 +424,9 @@ def main() -> int:
     destructive = bool(args.write or args.erase)
     if destructive and not args.yes:
         print("Refusing to erase or write without --yes.\n"
-              "\nBefore you pass it, know that RNWF02 v3.1.0 'Security level incremented to 1"
-              "\n(allows anti-rollback mechanism to reject previous versions)' -- per its own"
-              "\nrelease notes. Going back to 2.0.0 afterwards may be permanently blocked."
+              "\nBefore you pass it, know that each release raises the anti-rollback security"
+              "\nlevel -- 2.0.0 shipped at 0, 3.1.0 moved it to 1, 3.2.0 to 4 -- so going back to an"
+              "\nearlier version afterwards may be permanently blocked."
               "\n\nRun without --write/--erase first: that verifies DFU entry and touches nothing.")
         return 2
 
@@ -475,7 +475,7 @@ def main() -> int:
         dfu.ftdi.close()
 
     print("Done. Re-read the version with:")
-    print("  firmware/sim/probe_rnwf02.py --port /dev/cu.usbmodemXXXX   (expect +GMR 3.1.0)")
+    print("  firmware/sim/probe_rnwf02.py --port /dev/cu.usbmodemXXXX --require-version 3.2.0")
     return 0
 
 

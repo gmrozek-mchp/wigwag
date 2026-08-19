@@ -360,6 +360,68 @@ upstream was not checkable in that session.
 - Both modules are on 3.1.0 while 3.2.0 is released (ADR-0025).
 
 
+### Both modules on 3.2.0, updated over the AT UART
+
+Both are now on **3.2.0** (`+GMR:"3.2.0 4 a1ac4a49 [13:57:36 Mar 19 2026]"`), verified by
+`--require-version 3.2.0` rather than by eye, so ADR-0025 is satisfied for both units.
+
+**The update needed none of this morning's machinery.** `nvm-update.py` writes a running module over
+the ordinary AT UART (D141): 578 048 bytes in ~64 s at 8.8 KB/s through the add-on board's own USB-C,
+erase → download → verify → activate → reset → version read-back. No FTDI, no bit-bang pattern, no
+MCLR wire, no D2XX. Each add-on board presents its own MCP2200 serial number, so the two boards are
+different `/dev/cu.usbmodem…` paths — which is also how it was obvious the second board had been
+swapped in.
+
+**A caution I gave was wrong, and `AT+DI` corrected it.** I said the NVM path leaves no fallback
+because it writes the running image. It does not: the tool writes the *inactive* slot and activates it
+afterwards, so 3.1.0 survives underneath.
+
+```
++DI:15.0,0xFFFFFFB0,0x04030200,0x600F0000,2   <- high slot: 3.2.0, active
++DI:15.1,0xFFFFFFC0,0x01030100,0x60000000,3   <- low  slot: 3.1.0, kept
+```
+
+**What 3.2.0 actually contains, read rather than assumed** (`RNWF02_v3.2.0_Release_Notes.md`): **no CVE
+fixes at all** — every documented CVE was already fixed in 3.1.0. Its security content is hardening,
+the most relevant being **RNG reseeding after prolonged operation**, which matters for a device meant to
+run for weeks. Also: persistent baud rate configuration (1978), a new `ATF` controlling string and
+integer presentation format (2048), and MQTT fixes for "dual-stack broker resolution and QoS message
+acknowledgement" (2004/2005/2023) that sit suspiciously close to the two bugs we fixed today. So 3.2.0
+was worth having and was never urgent — the urgency was 3.1.0, this morning.
+
+**Anti-rollback is now steep:** security level 0 (2.0.0) → 1 (3.1.0) → **4** (3.2.0).
+
+**Done**
+- `firmware/tools/fetch-rnwf02-firmware.sh` — 3.2.0, and the URL now points at the SDK's GitHub
+  releases, which is *not* where 3.1.0 came from. The software-library page still lists 3.1.0 as
+  newest, which is exactly why it looked current; the script now says so in a comment. All four image
+  checksums replaced, and the unpack-directory match accepts both layouts.
+- `docs/module-firmware-dfu.md` — restructured around **two paths**: NVM update as normal, DFU as
+  recovery for a module that will not boot. Image table, slot example and gate version all corrected.
+- `docs/PLAN.md` — D133 now names 3.2.0/`a1ac4a49`; the pre-ship gate example follows; and phase 2's
+  item 18 no longer claims the publish payload is malformed, since that was fixed in 982c109.
+- `firmware/tools/rnwf02_dfu_mac.py` — its examples named 3.1.0 filenames that no longer exist.
+
+**Deliberately not changed**
+- **ADR-0025 is untouched.** Rule 2: an accepted ADR is not rewritten. Its decision is "the latest
+  released firmware", which is unchanged and still governing, and "as of this ADR that is 3.1.0"
+  remains true *as of that ADR*.
+- **`rnwf_at_cmds.h` still cites `58a15dc2`** while the hardware now runs `a1ac4a49`. Repointing the
+  citation without re-checking every value against the 3.2.0 reference would be precisely the uncited
+  claim that file forbids. That is a verification pass, not a find-and-replace — and the SDK's Markdown
+  reference makes it a grep.
+- The `~4.0 s` boot measurement in `rnwf_at.c` and `test_rnwf_at.c` is attributed to 3.1.0, which is
+  where it was measured. Worth re-measuring on 3.2.0, but it is not wrong as written.
+
+**Open**
+- `rnwf_at_cmds.h` vs revision `a1ac4a49`: the audit above, including whether `ATF`'s presentation
+  format has a default the line parser depends on.
+- `fake_rnwf02.py` still answers `+GMR:3.1.0` and announces itself as Network Controller 3.1.0.
+  Harmless, and wrong.
+- Publishing and the daemon end to end remain the only untested parts of the Wi-Fi path. The daemon is
+  blocked on a bench detail rather than the firmware: this Mac's VPN routes the whole 10.11.12.0/24
+  into `utun4`, so anything it hosts is unreachable from the module.
+
 ---
 
 ## 2026-08-17 — the documentation catches up with the device it describes
